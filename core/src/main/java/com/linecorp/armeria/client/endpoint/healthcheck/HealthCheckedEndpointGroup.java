@@ -39,6 +39,11 @@ import org.jctools.maps.NonBlockingHashSet;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import com.google.common.annotations.VisibleForTesting;
+import com.google.common.base.MoreObjects;
+import com.google.common.collect.ImmutableList;
+import com.spotify.futures.CompletableFutures;
+
 import com.linecorp.armeria.client.ClientFactory;
 import com.linecorp.armeria.client.ClientOptionsBuilder;
 import com.linecorp.armeria.client.Endpoint;
@@ -49,10 +54,6 @@ import com.linecorp.armeria.common.SessionProtocol;
 import com.linecorp.armeria.common.metric.MeterIdPrefix;
 import com.linecorp.armeria.common.util.AsyncCloseable;
 
-import com.google.common.annotations.VisibleForTesting;
-import com.google.common.base.MoreObjects;
-import com.google.common.collect.ImmutableList;
-import com.spotify.futures.CompletableFutures;
 import io.micrometer.core.instrument.binder.MeterBinder;
 import io.netty.channel.EventLoopGroup;
 import io.netty.util.concurrent.Future;
@@ -91,8 +92,6 @@ public final class HealthCheckedEndpointGroup extends DynamicEndpointGroup {
     }
 
     final EndpointGroup delegate;
-    @VisibleForTesting
-    final Set<Endpoint> healthyEndpoints = new NonBlockingHashSet<>();
     private final ClientFactory clientFactory;
     private final SessionProtocol protocol;
     private final int port;
@@ -100,7 +99,10 @@ public final class HealthCheckedEndpointGroup extends DynamicEndpointGroup {
     private final Function<? super ClientOptionsBuilder, ClientOptionsBuilder> clientConfigurator;
     private final Function<? super HealthCheckerContext, ? extends AsyncCloseable> checkerFactory;
     private final HealthCheckStrategy healthCheckStrategy;
+
     private final Map<Endpoint, DefaultHealthCheckerContext> contexts = new HashMap<>();
+    @VisibleForTesting
+    final Set<Endpoint> healthyEndpoints = new NonBlockingHashSet<>();
     private volatile boolean closed;
 
     /**
@@ -153,7 +155,7 @@ public final class HealthCheckedEndpointGroup extends DynamicEndpointGroup {
             // Stop the health checkers whose endpoints disappeared and destroy their contexts.
             for (final Iterator<Map.Entry<Endpoint, DefaultHealthCheckerContext>> i = contexts.entrySet()
                                                                                               .iterator();
-                 i.hasNext(); ) {
+                 i.hasNext();) {
                 final Map.Entry<Endpoint, DefaultHealthCheckerContext> e = i.next();
                 if (selectedCandidates.contains(e.getKey())) {
                     // Not a removed endpoint.
@@ -242,16 +244,18 @@ public final class HealthCheckedEndpointGroup extends DynamicEndpointGroup {
     private final class DefaultHealthCheckerContext
             extends AbstractExecutorService implements HealthCheckerContext, ScheduledExecutorService {
 
-        final CompletableFuture<?> initialCheckFuture = new CompletableFuture<>();
         private final Endpoint originalEndpoint;
         private final Endpoint endpoint;
+
         /**
          * Keeps the {@link Future}s which were scheduled via this {@link ScheduledExecutorService}.
          * Note that this field is also used as a lock.
          */
         private final Map<Future<?>, Boolean> scheduledFutures = new IdentityHashMap<>();
+
         @Nullable
         private AsyncCloseable handle;
+        final CompletableFuture<?> initialCheckFuture = new CompletableFuture<>();
         private boolean destroyed;
 
         DefaultHealthCheckerContext(Endpoint endpoint) {
@@ -341,7 +345,6 @@ public final class HealthCheckedEndpointGroup extends DynamicEndpointGroup {
 
         private void updateHealth(double health, boolean updateEvenIfDestroyed) {
             final boolean updated;
-
             synchronized (scheduledFutures) {
                 if (!updateEvenIfDestroyed && destroyed) {
                     updated = false;

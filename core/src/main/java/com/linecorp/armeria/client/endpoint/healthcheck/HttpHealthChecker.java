@@ -22,6 +22,8 @@ import java.util.concurrent.TimeUnit;
 
 import javax.annotation.Nullable;
 
+import com.google.common.math.LongMath;
+
 import com.linecorp.armeria.client.Client;
 import com.linecorp.armeria.client.ClientOptionsBuilder;
 import com.linecorp.armeria.client.ClientRequestContext;
@@ -39,7 +41,6 @@ import com.linecorp.armeria.common.RequestHeaders;
 import com.linecorp.armeria.common.RequestHeadersBuilder;
 import com.linecorp.armeria.common.util.AsyncCloseable;
 
-import com.google.common.math.LongMath;
 import io.netty.util.AsciiString;
 
 final class HttpHealthChecker implements AsyncCloseable {
