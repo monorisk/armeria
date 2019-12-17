@@ -24,7 +24,7 @@ import com.linecorp.armeria.common.HttpHeaderNames;
 import com.linecorp.armeria.common.HttpHeaders;
 import com.linecorp.armeria.common.HttpMethod;
 import com.linecorp.armeria.common.HttpRequest;
-import com.linecorp.armeria.common.HttpResponse;
+import com.linecorp.armeria.common.RequestId;
 
 import io.netty.util.AttributeKey;
 
@@ -33,7 +33,7 @@ class DefaultServiceRequestContextTest {
     @Test
     void requestTimedOut() {
         final HttpRequest request = HttpRequest.of(HttpMethod.GET, "/hello");
-        final ServiceRequestContext ctx = ServiceRequestContextBuilder.of(request).build();
+        final ServiceRequestContext ctx = ServiceRequestContext.builder(request).build();
         assertThat(ctx.isTimedOut()).isFalse();
 
         assert ctx instanceof DefaultServiceRequestContext;
@@ -46,7 +46,7 @@ class DefaultServiceRequestContextTest {
     @Test
     void deriveContext() {
         final HttpRequest request = HttpRequest.of(HttpMethod.GET, "/hello");
-        final ServiceRequestContext originalCtx = ServiceRequestContextBuilder.of(request).build();
+        final ServiceRequestContext originalCtx = ServiceRequestContext.builder(request).build();
 
         setAdditionalHeaders(originalCtx);
         setAdditionalTrailers(originalCtx);
@@ -54,12 +54,15 @@ class DefaultServiceRequestContextTest {
         final AttributeKey<String> foo = AttributeKey.valueOf(DefaultServiceRequestContextTest.class, "foo");
         originalCtx.attr(foo).set("foo");
 
+        final RequestId newId = RequestId.random();
         final HttpRequest newRequest = HttpRequest.of(HttpMethod.GET, "/derived/hello");
-        final ServiceRequestContext derivedCtx = originalCtx.newDerivedContext(newRequest, null);
+        final ServiceRequestContext derivedCtx = originalCtx.newDerivedContext(newId, newRequest, null);
+
         assertThat(derivedCtx.server()).isSameAs(originalCtx.server());
         assertThat(derivedCtx.sessionProtocol()).isSameAs(originalCtx.sessionProtocol());
-        assertThat(derivedCtx.<Service<HttpRequest, HttpResponse>>service()).isSameAs(originalCtx.service());
+        assertThat(derivedCtx.service()).isSameAs(originalCtx.service());
         assertThat(derivedCtx.route()).isSameAs(originalCtx.route());
+        assertThat(derivedCtx.id()).isSameAs(newId);
         assertThat(derivedCtx.request()).isSameAs(newRequest);
 
         assertThat(derivedCtx.path()).isEqualTo(originalCtx.path());

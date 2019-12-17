@@ -38,12 +38,10 @@ import org.junit.jupiter.params.provider.MethodSource;
 import com.google.common.collect.ImmutableList;
 
 import com.linecorp.armeria.client.ClientFactory;
-import com.linecorp.armeria.client.ClientFactoryBuilder;
-import com.linecorp.armeria.client.HttpClient;
+import com.linecorp.armeria.client.WebClient;
 import com.linecorp.armeria.common.AggregatedHttpResponse;
 import com.linecorp.armeria.common.HttpHeaderNames;
 import com.linecorp.armeria.common.HttpMethod;
-import com.linecorp.armeria.common.HttpRequest;
 import com.linecorp.armeria.common.HttpResponse;
 import com.linecorp.armeria.common.HttpStatus;
 import com.linecorp.armeria.common.RequestHeaders;
@@ -62,7 +60,7 @@ class RouteDecoratingTest {
         queue = new ArrayDeque<>();
     }
 
-    static DecoratingServiceFunction<HttpRequest, HttpResponse> newDecorator(int id) {
+    static DecoratingHttpServiceFunction newDecorator(int id) {
         return (delegate, ctx, req) -> {
             queue.add(id);
             return delegate.serve(ctx, req);
@@ -143,7 +141,7 @@ class RouteDecoratingTest {
     @ParameterizedTest
     @MethodSource("generateDecorateInOrder")
     void decorateInOrder(String path, List<Integer> orders) {
-        final HttpClient client = HttpClient.of(decoratingServer.uri("/"));
+        final WebClient client = WebClient.of(decoratingServer.uri("/"));
         client.get(path).aggregate().join();
         assertThat(queue).containsExactlyElementsOf(orders);
     }
@@ -168,7 +166,7 @@ class RouteDecoratingTest {
             "/assets/resources/private/profile.jpg, , 200, private",
     })
     void secured(String path, @Nullable String authorization, int status, String cacheControl) {
-        final HttpClient client = HttpClient.of(authServer.uri("/"));
+        final WebClient client = WebClient.of(authServer.uri("/"));
         final RequestHeaders headers;
         if (authorization != null) {
             headers = RequestHeaders.of(HttpMethod.GET, path, HttpHeaderNames.AUTHORIZATION, authorization);
@@ -187,10 +185,11 @@ class RouteDecoratingTest {
             "bar.com, /bar/1, , 200"
     })
     void virtualHost(String host, String path, @Nullable String authorization, int status) {
-        final ClientFactory factory = new ClientFactoryBuilder()
-                .addressResolverGroupFactory(eventLoop -> MockAddressResolverGroup.localhost())
-                .build();
-        final HttpClient client = HttpClient.of(factory, "http://" + host + ':' + virtualHostServer.httpPort());
+        final ClientFactory factory =
+                ClientFactory.builder()
+                             .addressResolverGroupFactory(eventLoop -> MockAddressResolverGroup.localhost())
+                             .build();
+        final WebClient client = WebClient.of(factory, "http://" + host + ':' + virtualHostServer.httpPort());
         final RequestHeaders headers;
         if (authorization != null) {
             headers = RequestHeaders.of(HttpMethod.GET, path, HttpHeaderNames.AUTHORIZATION, authorization);
@@ -203,9 +202,8 @@ class RouteDecoratingTest {
 
     @Test
     void shouldSetPath() {
-        assertThatThrownBy(() -> new ServerBuilder()
-                .routeDecorator().build(Function.identity())
-        ).isInstanceOf(IllegalStateException.class)
-         .hasMessageContaining("Should set at least one");
+        assertThatThrownBy(() -> Server.builder().routeDecorator().build(Function.identity()))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("Should set at least one");
     }
 }

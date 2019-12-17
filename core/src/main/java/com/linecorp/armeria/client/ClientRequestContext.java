@@ -31,8 +31,10 @@ import com.linecorp.armeria.client.endpoint.EndpointSelector;
 import com.linecorp.armeria.common.ContentTooLargeException;
 import com.linecorp.armeria.common.HttpHeaders;
 import com.linecorp.armeria.common.HttpRequest;
+import com.linecorp.armeria.common.HttpResponseWriter;
 import com.linecorp.armeria.common.Request;
 import com.linecorp.armeria.common.RequestContext;
+import com.linecorp.armeria.common.RequestId;
 import com.linecorp.armeria.common.Response;
 import com.linecorp.armeria.common.RpcRequest;
 import com.linecorp.armeria.common.logging.RequestLog;
@@ -109,7 +111,7 @@ public interface ClientRequestContext extends RequestContext {
      * @see ClientRequestContextBuilder
      */
     static ClientRequestContext of(HttpRequest request) {
-        return ClientRequestContextBuilder.of(request).build();
+        return builder(request).build();
     }
 
     /**
@@ -121,7 +123,7 @@ public interface ClientRequestContext extends RequestContext {
      * @see ClientRequestContextBuilder
      */
     static ClientRequestContext of(RpcRequest request, String uri) {
-        return ClientRequestContextBuilder.of(request, URI.create(requireNonNull(uri, "uri"))).build();
+        return builder(request, URI.create(requireNonNull(uri, "uri"))).build();
     }
 
     /**
@@ -133,7 +135,30 @@ public interface ClientRequestContext extends RequestContext {
      * @see ClientRequestContextBuilder
      */
     static ClientRequestContext of(RpcRequest request, URI uri) {
-        return ClientRequestContextBuilder.of(request, uri).build();
+        return builder(request, uri).build();
+    }
+
+    /**
+     * Returns a new {@link ClientRequestContextBuilder} created from the specified {@link HttpRequest}.
+     */
+    static ClientRequestContextBuilder builder(HttpRequest request) {
+        return new ClientRequestContextBuilder(request);
+    }
+
+    /**
+     * Returns a new {@link ClientRequestContextBuilder} created from the specified {@link RpcRequest} and
+     * {@code uri}.
+     */
+    static ClientRequestContextBuilder builder(RpcRequest request, String uri) {
+        return builder(request, URI.create(requireNonNull(uri, "uri")));
+    }
+
+    /**
+     * Returns a new {@link ClientRequestContextBuilder} created from the specified {@link RpcRequest} and
+     * {@link URI}.
+     */
+    static ClientRequestContextBuilder builder(RpcRequest request, URI uri) {
+        return new ClientRequestContextBuilder(request, uri);
     }
 
     /**
@@ -154,24 +179,15 @@ public interface ClientRequestContext extends RequestContext {
 
     /**
      * Creates a new {@link ClientRequestContext} whose properties and {@link Attribute}s are copied from this
-     * {@link ClientRequestContext}, except having its own {@link RequestLog}.
-     */
-    @Override
-    default ClientRequestContext newDerivedContext() {
-        final Endpoint endpoint = endpoint();
-        checkState(endpoint != null, "endpoint not available");
-        return newDerivedContext(request(), rpcRequest(), endpoint);
-    }
-
-    /**
-     * Creates a new {@link ClientRequestContext} whose properties and {@link Attribute}s are copied from this
      * {@link ClientRequestContext}, except having a different {@link Request} and its own {@link RequestLog}.
      */
     @Override
-    default ClientRequestContext newDerivedContext(@Nullable HttpRequest req, @Nullable RpcRequest rpcReq) {
+    default ClientRequestContext newDerivedContext(RequestId id,
+                                                   @Nullable HttpRequest req,
+                                                   @Nullable RpcRequest rpcReq) {
         final Endpoint endpoint = endpoint();
         checkState(endpoint != null, "endpoint not available");
-        return newDerivedContext(req, rpcReq, endpoint);
+        return newDerivedContext(id, req, rpcReq, endpoint);
     }
 
     /**
@@ -179,7 +195,7 @@ public interface ClientRequestContext extends RequestContext {
      * {@link ClientRequestContext}, except having different {@link Request}, {@link Endpoint} and its own
      * {@link RequestLog}.
      */
-    ClientRequestContext newDerivedContext(@Nullable HttpRequest req, @Nullable RpcRequest rpcReq,
+    ClientRequestContext newDerivedContext(RequestId id, @Nullable HttpRequest req, @Nullable RpcRequest rpcReq,
                                            Endpoint endpoint);
 
     /**
@@ -252,6 +268,30 @@ public interface ClientRequestContext extends RequestContext {
      * {@link ClientOption#RESPONSE_TIMEOUT_MILLIS}.
      */
     void setResponseTimeout(Duration responseTimeout);
+
+    /**
+     * Returns {@link Response} timeout handler which is executed when
+     * the {@link Response} is not completely received within the allowed {@link #responseTimeoutMillis()}
+     * or the default {@link ClientOption#RESPONSE_TIMEOUT_MILLIS}.
+     */
+    @Nullable
+    Runnable responseTimeoutHandler();
+
+    /**
+     * Sets a handler to run when the response times out. {@code responseTimeoutHandler} must abort
+     * the response, e.g., by calling {@link HttpResponseWriter#abort(Throwable)}.
+     * If not set, the response will be closed with {@link ResponseTimeoutException}.
+     *
+     * <p>For example,
+     * <pre>{@code
+     * HttpResponseWriter res = HttpResponse.streaming();
+     * ctx.setResponseTimeoutHandler(() -> {
+     *    res.abort(new IllegalStateException("Server is in a bad state."));
+     * });
+     * ...
+     * }</pre>
+     */
+    void setResponseTimeoutHandler(Runnable responseTimeoutHandler);
 
     /**
      * Returns the maximum length of the received {@link Response}.

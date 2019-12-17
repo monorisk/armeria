@@ -30,15 +30,16 @@ import org.junit.runners.Parameterized.Parameters;
 
 import com.google.common.collect.ImmutableList;
 
-import com.linecorp.armeria.client.ClientDecorationBuilder;
+import com.linecorp.armeria.client.ClientDecoration;
 import com.linecorp.armeria.client.ClientFactory;
 import com.linecorp.armeria.client.ClientOption;
 import com.linecorp.armeria.client.ClientOptions;
-import com.linecorp.armeria.client.HttpClient;
+import com.linecorp.armeria.client.WebClient;
 import com.linecorp.armeria.common.HttpMethod;
 import com.linecorp.armeria.common.HttpRequest;
 import com.linecorp.armeria.common.NonWrappingRequestContext;
 import com.linecorp.armeria.common.RequestContext;
+import com.linecorp.armeria.common.RequestId;
 import com.linecorp.armeria.common.RpcRequest;
 import com.linecorp.armeria.common.SessionProtocol;
 import com.linecorp.armeria.common.brave.RequestContextCurrentTraceContext;
@@ -55,7 +56,7 @@ import io.netty.channel.EventLoop;
 import okhttp3.Protocol;
 
 @RunWith(Parameterized.class)
-public class BraveClientIntegrationTest extends ITHttpAsyncClient<HttpClient> {
+public class BraveClientIntegrationTest extends ITHttpAsyncClient<WebClient> {
 
     @Parameters
     public static List<SessionProtocol> sessionProtocols() {
@@ -91,12 +92,12 @@ public class BraveClientIntegrationTest extends ITHttpAsyncClient<HttpClient> {
     }
 
     @Override
-    protected HttpClient newClient(int port) {
-        return HttpClient.of(sessionProtocol.uriText() + "://127.0.0.1:" + port,
-                             ClientOptions.of(ClientOption.DECORATION.newValue(
-                                     new ClientDecorationBuilder()
-                                             .add(BraveClient.newDecorator(httpTracing))
-                                             .build())));
+    protected WebClient newClient(int port) {
+        return WebClient.of(sessionProtocol.uriText() + "://127.0.0.1:" + port,
+                            ClientOptions.of(ClientOption.DECORATION.newValue(
+                                    ClientDecoration.builder()
+                                                    .add(BraveClient.newDecorator(httpTracing))
+                                                    .build())));
     }
 
     @Override
@@ -142,39 +143,41 @@ public class BraveClientIntegrationTest extends ITHttpAsyncClient<HttpClient> {
     }
 
     @Override
-    protected void closeClient(HttpClient client) {
+    protected void closeClient(WebClient client) {
     }
 
     @Override
-    protected void get(HttpClient client, String pathIncludingQuery) {
+    protected void get(WebClient client, String pathIncludingQuery) {
         client.get(pathIncludingQuery).aggregate().join();
     }
 
     @Override
-    protected void post(HttpClient client, String pathIncludingQuery, String body) {
+    protected void post(WebClient client, String pathIncludingQuery, String body) {
         client.post(pathIncludingQuery, body).aggregate().join();
     }
 
     @Override
-    protected void getAsync(HttpClient client, String pathIncludingQuery) throws Exception {
+    protected void getAsync(WebClient client, String pathIncludingQuery) throws Exception {
         client.get(pathIncludingQuery);
     }
 
     private static class DummyRequestContext extends NonWrappingRequestContext {
         DummyRequestContext() {
             super(NoopMeterRegistry.get(), SessionProtocol.HTTP,
-                  HttpMethod.GET, "/", null, HttpRequest.streaming(HttpMethod.GET, "/"), null);
+                  RequestId.random(), HttpMethod.GET, "/", null,
+                  HttpRequest.streaming(HttpMethod.GET, "/"), null);
         }
 
         @Override
-        public RequestContext newDerivedContext(@Nullable HttpRequest req,
+        public RequestContext newDerivedContext(RequestId id,
+                                                @Nullable HttpRequest req,
                                                 @Nullable RpcRequest rpcReq) {
             throw new UnsupportedOperationException();
         }
 
         @Override
         public EventLoop eventLoop() {
-            return ClientFactory.DEFAULT.eventLoopGroup().next();
+            return ClientFactory.ofDefault().eventLoopGroup().next();
         }
 
         @Nullable

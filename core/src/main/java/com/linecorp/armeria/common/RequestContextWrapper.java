@@ -103,6 +103,11 @@ public abstract class RequestContextWrapper<T extends RequestContext> extends Ab
     }
 
     @Override
+    public RequestId id() {
+        return delegate().id();
+    }
+
+    @Override
     public HttpMethod method() {
         return delegate().method();
     }

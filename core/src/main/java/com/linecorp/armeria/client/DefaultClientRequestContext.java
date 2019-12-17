@@ -39,7 +39,10 @@ import com.linecorp.armeria.common.HttpHeadersBuilder;
 import com.linecorp.armeria.common.HttpMethod;
 import com.linecorp.armeria.common.HttpRequest;
 import com.linecorp.armeria.common.NonWrappingRequestContext;
+import com.linecorp.armeria.common.Request;
 import com.linecorp.armeria.common.RequestHeaders;
+import com.linecorp.armeria.common.RequestId;
+import com.linecorp.armeria.common.Response;
 import com.linecorp.armeria.common.RpcRequest;
 import com.linecorp.armeria.common.SessionProtocol;
 import com.linecorp.armeria.common.logging.DefaultRequestLog;
@@ -83,6 +86,8 @@ public class DefaultClientRequestContext extends NonWrappingRequestContext imple
 
     private long writeTimeoutMillis;
     private long responseTimeoutMillis;
+    @Nullable
+    private Runnable responseTimeoutHandler;
     private long maxResponseLength;
 
     @SuppressWarnings("FieldMayBeFinal") // Updated via `additionalRequestHeadersUpdater`
@@ -97,15 +102,17 @@ public class DefaultClientRequestContext extends NonWrappingRequestContext imple
      *
      * @param eventLoop the {@link EventLoop} associated with this context
      * @param sessionProtocol the {@link SessionProtocol} of the invocation
+     * @param id the {@link RequestId} that represents the identifier of the current {@link Request}
+     *           and {@link Response} pair.
      * @param req the {@link HttpRequest} associated with this context
      * @param rpcReq the {@link RpcRequest} associated with this context
      */
     public DefaultClientRequestContext(
             EventLoop eventLoop, MeterRegistry meterRegistry, SessionProtocol sessionProtocol,
-            HttpMethod method, String path, @Nullable String query, @Nullable String fragment,
+            RequestId id, HttpMethod method, String path, @Nullable String query, @Nullable String fragment,
             ClientOptions options, @Nullable HttpRequest req, @Nullable RpcRequest rpcReq) {
         this(null, requireNonNull(eventLoop, "eventLoop"), meterRegistry, sessionProtocol,
-             method, path, query, fragment, options, req, rpcReq);
+             id, method, path, query, fragment, options, req, rpcReq);
     }
 
     /**
@@ -114,23 +121,25 @@ public class DefaultClientRequestContext extends NonWrappingRequestContext imple
      *
      * @param factory the {@link ClientFactory} which is used to acquire an {@link EventLoop}
      * @param sessionProtocol the {@link SessionProtocol} of the invocation
+     * @param id the {@link RequestId} that contains the identifier of the current {@link Request}
+     *           and {@link Response} pair.
      * @param req the {@link HttpRequest} associated with this context
      * @param rpcReq the {@link RpcRequest} associated with this context
      */
     public DefaultClientRequestContext(
             ClientFactory factory, MeterRegistry meterRegistry, SessionProtocol sessionProtocol,
-            HttpMethod method, String path, @Nullable String query, @Nullable String fragment,
+            RequestId id, HttpMethod method, String path, @Nullable String query, @Nullable String fragment,
             ClientOptions options, @Nullable HttpRequest req, @Nullable RpcRequest rpcReq) {
         this(requireNonNull(factory, "factory"), null, meterRegistry, sessionProtocol,
-             method, path, query, fragment, options, req, rpcReq);
+             id, method, path, query, fragment, options, req, rpcReq);
     }
 
     private DefaultClientRequestContext(
             @Nullable ClientFactory factory, @Nullable EventLoop eventLoop, MeterRegistry meterRegistry,
-            SessionProtocol sessionProtocol, HttpMethod method, String path, @Nullable String query,
-            @Nullable String fragment, ClientOptions options,
+            SessionProtocol sessionProtocol, RequestId id, HttpMethod method, String path,
+            @Nullable String query, @Nullable String fragment, ClientOptions options,
             @Nullable HttpRequest req, @Nullable RpcRequest rpcReq) {
-        super(meterRegistry, sessionProtocol, method, path, query, req, rpcReq);
+        super(meterRegistry, sessionProtocol, id, method, path, query, req, rpcReq);
 
         this.factory = factory;
         this.eventLoop = eventLoop;
@@ -222,7 +231,7 @@ public class DefaultClientRequestContext extends NonWrappingRequestContext imple
         final HttpRequest req = request();
         if (req != null) {
             autoFillSchemeAndAuthority();
-            req.abort();
+            req.abort(cause);
         }
     }
 
@@ -248,10 +257,12 @@ public class DefaultClientRequestContext extends NonWrappingRequestContext imple
      * Creates a derived context.
      */
     private DefaultClientRequestContext(DefaultClientRequestContext ctx,
+                                        RequestId id,
                                         @Nullable HttpRequest req,
                                         @Nullable RpcRequest rpcReq,
                                         Endpoint endpoint) {
-        super(ctx.meterRegistry(), ctx.sessionProtocol(), ctx.method(), ctx.path(), ctx.query(), req, rpcReq);
+        super(ctx.meterRegistry(), ctx.sessionProtocol(), id, ctx.method(), ctx.path(), ctx.query(),
+              req, rpcReq);
 
         // The new requests cannot be null if it was previously non-null.
         if (ctx.request() != null) {
@@ -288,9 +299,11 @@ public class DefaultClientRequestContext extends NonWrappingRequestContext imple
     }
 
     @Override
-    public ClientRequestContext newDerivedContext(@Nullable HttpRequest req, @Nullable RpcRequest rpcReq,
+    public ClientRequestContext newDerivedContext(RequestId id,
+                                                  @Nullable HttpRequest req,
+                                                  @Nullable RpcRequest rpcReq,
                                                   Endpoint endpoint) {
-        return new DefaultClientRequestContext(this, req, rpcReq, endpoint);
+        return new DefaultClientRequestContext(this, id, req, rpcReq, endpoint);
     }
 
     @Override
@@ -387,6 +400,17 @@ public class DefaultClientRequestContext extends NonWrappingRequestContext imple
     @Override
     public void setResponseTimeout(Duration responseTimeout) {
         setResponseTimeoutMillis(requireNonNull(responseTimeout, "responseTimeout").toMillis());
+    }
+
+    @Override
+    @Nullable
+    public Runnable responseTimeoutHandler() {
+        return responseTimeoutHandler;
+    }
+
+    @Override
+    public void setResponseTimeoutHandler(Runnable responseTimeoutHandler) {
+        this.responseTimeoutHandler = requireNonNull(responseTimeoutHandler, "responseTimeoutHandler");
     }
 
     @Override

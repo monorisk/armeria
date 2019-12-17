@@ -33,12 +33,10 @@ import java.util.function.Function;
 import org.junit.ClassRule;
 import org.junit.Test;
 
-import com.linecorp.armeria.client.Client;
 import com.linecorp.armeria.client.ClientRequestContext;
-import com.linecorp.armeria.client.ClientRequestContextBuilder;
 import com.linecorp.armeria.client.Endpoint;
 import com.linecorp.armeria.client.HttpClient;
-import com.linecorp.armeria.client.HttpClientBuilder;
+import com.linecorp.armeria.client.WebClient;
 import com.linecorp.armeria.common.HttpMethod;
 import com.linecorp.armeria.common.HttpRequest;
 import com.linecorp.armeria.common.HttpResponse;
@@ -52,9 +50,9 @@ public class CircuitBreakerHttpClientTest {
     private static final String remoteServiceName = "testService";
 
     private static final ClientRequestContext ctx =
-            ClientRequestContextBuilder.of(HttpRequest.of(HttpMethod.GET, "/"))
-                                       .endpoint(Endpoint.of("dummyhost", 8080))
-                                       .build();
+            ClientRequestContext.builder(HttpRequest.of(HttpMethod.GET, "/"))
+                                .endpoint(Endpoint.of("dummyhost", 8080))
+                                .build();
 
     @ClassRule
     public static final ServerRule server = new ServerRule() {
@@ -153,9 +151,9 @@ public class CircuitBreakerHttpClientTest {
                               .build();
 
         final CircuitBreakerMapping mapping = (ctx, req) -> circuitBreaker;
-        final HttpClient client = new HttpClientBuilder(server.uri("/"))
-                .decorator(builder.mapping(mapping).newDecorator())
-                .build();
+        final WebClient client = WebClient.builder(server.uri("/"))
+                                          .decorator(builder.mapping(mapping).newDecorator())
+                                          .build();
 
         ticker.addAndGet(Duration.ofMillis(1).toNanos());
         // CLOSED
@@ -174,9 +172,7 @@ public class CircuitBreakerHttpClientTest {
     }
 
     private static void failFastInvocation(
-            Function<Client<HttpRequest, HttpResponse>, CircuitBreakerHttpClient> decorator,
-            HttpMethod method, int count) {
-
+            Function<? super HttpClient, CircuitBreakerHttpClient> decorator, HttpMethod method, int count) {
         for (int i = 0; i < count; i++) {
             final HttpRequest req = HttpRequest.of(method, "/");
             assertThatThrownBy(() -> invoke(decorator, req)).isInstanceOf(FailFastException.class);
@@ -184,12 +180,10 @@ public class CircuitBreakerHttpClientTest {
     }
 
     private static void invoke(
-            Function<Client<HttpRequest, HttpResponse>, CircuitBreakerHttpClient> decorator,
+            Function<? super HttpClient, CircuitBreakerHttpClient> decorator,
             HttpRequest req) throws Exception {
-
-        @SuppressWarnings("unchecked")
-        final Client<HttpRequest, HttpResponse> client = mock(Client.class);
-        final Client<HttpRequest, HttpResponse> decorated = decorator.apply(client);
+        final HttpClient client = mock(HttpClient.class);
+        final HttpClient decorated = decorator.apply(client);
 
         decorated.execute(ctx, req);
     }

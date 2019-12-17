@@ -59,16 +59,15 @@ import com.linecorp.armeria.client.ClientBuilder;
 import com.linecorp.armeria.client.ClientOption;
 import com.linecorp.armeria.client.ClientRequestContext;
 import com.linecorp.armeria.client.Clients;
-import com.linecorp.armeria.client.DecoratingClientFunction;
+import com.linecorp.armeria.client.DecoratingHttpClientFunction;
 import com.linecorp.armeria.client.Endpoint;
 import com.linecorp.armeria.client.ResponseTimeoutException;
-import com.linecorp.armeria.client.logging.LoggingClientBuilder;
+import com.linecorp.armeria.client.logging.LoggingClient;
 import com.linecorp.armeria.common.FilteredHttpResponse;
 import com.linecorp.armeria.common.HttpHeaderNames;
 import com.linecorp.armeria.common.HttpHeaders;
 import com.linecorp.armeria.common.HttpHeadersBuilder;
 import com.linecorp.armeria.common.HttpObject;
-import com.linecorp.armeria.common.HttpRequest;
 import com.linecorp.armeria.common.HttpResponse;
 import com.linecorp.armeria.common.RpcRequest;
 import com.linecorp.armeria.common.RpcResponse;
@@ -150,7 +149,7 @@ public class GrpcClientTest {
                                         ServerCall<REQ, RESP> call,
                                         Metadata requestHeaders,
                                         ServerCallHandler<REQ, RESP> next) {
-                                    HttpHeadersBuilder fromClient = HttpHeaders.builder();
+                                    final HttpHeadersBuilder fromClient = HttpHeaders.builder();
                                     MetadataUtil.fillHeaders(requestHeaders, fromClient);
                                     CLIENT_HEADERS_CAPTURE.set(fromClient.build());
                                     return next.startCall(
@@ -201,7 +200,7 @@ public class GrpcClientTest {
     @Before
     public void setUp() {
         requestLogQueue.clear();
-        final DecoratingClientFunction<HttpRequest, HttpResponse> requestLogRecorder = (delegate, ctx, req) -> {
+        final DecoratingHttpClientFunction requestLogRecorder = (delegate, ctx, req) -> {
             ctx.log().addListener(requestLogQueue::add, RequestLogAvailability.COMPLETE);
             return delegate.execute(ctx, req);
         };
@@ -209,11 +208,11 @@ public class GrpcClientTest {
         final URI uri = URI.create(server.httpUri("/"));
         blockingStub = new ClientBuilder("gproto+" + uri)
                 .maxResponseLength(MAX_MESSAGE_SIZE)
-                .decorator(new LoggingClientBuilder().newDecorator())
+                .decorator(LoggingClient.builder().newDecorator())
                 .decorator(requestLogRecorder)
                 .build(TestServiceBlockingStub.class);
         asyncStub = new ClientBuilder("gproto+" + uri.getScheme(), Endpoint.of(uri.getHost(), uri.getPort()))
-                .decorator(new LoggingClientBuilder().newDecorator())
+                .decorator(LoggingClient.builder().newDecorator())
                 .decorator(requestLogRecorder)
                 .build(TestServiceStub.class);
     }
@@ -235,7 +234,7 @@ public class GrpcClientTest {
 
     @Test
     public void emptyUnary_grpcWeb() throws Exception {
-        TestServiceBlockingStub stub = new ClientBuilder("gproto-web+" + server.httpUri("/"))
+        final TestServiceBlockingStub stub = new ClientBuilder("gproto-web+" + server.httpUri("/"))
                 .build(TestServiceBlockingStub.class);
         assertThat(stub.emptyCall(EMPTY)).isEqualTo(EMPTY);
     }
@@ -281,7 +280,7 @@ public class GrpcClientTest {
 
         final TestServiceStub stub = new ClientBuilder("gproto+" + server.httpUri("/"))
                 .option(GrpcClientOptions.UNSAFE_WRAP_RESPONSE_BUFFERS.newValue(true))
-                .decorator(new LoggingClientBuilder().newDecorator())
+                .decorator(LoggingClient.builder().newDecorator())
                 .build(TestServiceStub.class);
 
         final BlockingQueue<Object> resultQueue = new LinkedTransferQueue<>();
@@ -807,8 +806,8 @@ public class GrpcClientTest {
                         ClientOption.HTTP_HEADERS.newValue(
                                 HttpHeaders.of(TestServiceImpl.EXTRA_HEADER_NAME, "dog")));
 
-        AtomicReference<Metadata> headers = new AtomicReference<>();
-        AtomicReference<Metadata> trailers = new AtomicReference<>();
+        final AtomicReference<Metadata> headers = new AtomicReference<>();
+        final AtomicReference<Metadata> trailers = new AtomicReference<>();
         stub = MetadataUtils.captureMetadata(stub, headers, trailers);
 
         assertThat(stub.emptyCall(EMPTY)).isNotNull();
@@ -831,13 +830,13 @@ public class GrpcClientTest {
 
     @Test
     public void exchangeHeadersUnaryCall_grpcMetadata() throws Exception {
-        Metadata metadata = new Metadata();
+        final Metadata metadata = new Metadata();
         metadata.put(TestServiceImpl.EXTRA_HEADER_KEY, "dog");
 
         TestServiceBlockingStub stub = MetadataUtils.attachHeaders(blockingStub, metadata);
 
-        AtomicReference<Metadata> headers = new AtomicReference<>();
-        AtomicReference<Metadata> trailers = new AtomicReference<>();
+        final AtomicReference<Metadata> headers = new AtomicReference<>();
+        final AtomicReference<Metadata> trailers = new AtomicReference<>();
         stub = MetadataUtils.captureMetadata(stub, headers, trailers);
 
         assertThat(stub.emptyCall(EMPTY)).isNotNull();

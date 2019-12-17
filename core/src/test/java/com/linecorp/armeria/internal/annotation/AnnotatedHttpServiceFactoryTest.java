@@ -29,6 +29,7 @@ import java.lang.annotation.Target;
 import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
@@ -36,13 +37,15 @@ import java.util.stream.Stream;
 import org.assertj.core.util.Lists;
 import org.junit.Test;
 
+import com.linecorp.armeria.common.HttpMethod;
 import com.linecorp.armeria.common.HttpRequest;
 import com.linecorp.armeria.common.HttpResponse;
 import com.linecorp.armeria.common.HttpStatus;
 import com.linecorp.armeria.common.logging.LogLevel;
 import com.linecorp.armeria.internal.annotation.AnnotatedHttpServiceFactory.DecoratorAndOrder;
-import com.linecorp.armeria.server.DecoratingServiceFunction;
-import com.linecorp.armeria.server.Service;
+import com.linecorp.armeria.server.DecoratingHttpServiceFunction;
+import com.linecorp.armeria.server.HttpService;
+import com.linecorp.armeria.server.Route;
 import com.linecorp.armeria.server.ServiceRequestContext;
 import com.linecorp.armeria.server.SimpleDecoratingHttpService;
 import com.linecorp.armeria.server.annotation.Decorator;
@@ -53,6 +56,7 @@ import com.linecorp.armeria.server.annotation.Get;
 import com.linecorp.armeria.server.annotation.Head;
 import com.linecorp.armeria.server.annotation.Options;
 import com.linecorp.armeria.server.annotation.Patch;
+import com.linecorp.armeria.server.annotation.Path;
 import com.linecorp.armeria.server.annotation.PathPrefix;
 import com.linecorp.armeria.server.annotation.Post;
 import com.linecorp.armeria.server.annotation.Put;
@@ -181,6 +185,107 @@ public class AnnotatedHttpServiceFactoryTest {
         });
     }
 
+    @Test
+    public void testMultiPathSuccessGetMapping() {
+        final List<AnnotatedHttpServiceElement> getServiceElements =
+                getServiceElements(new MultiPathSuccessService(), "getMapping", HttpMethod.GET);
+        final Set<Route> routes = getServiceElements.stream().map(AnnotatedHttpServiceElement::route).collect(
+                Collectors.toSet());
+        assertThat(routes).containsOnly(Route.builder().path("/getMapping").methods(HttpMethod.GET).build());
+    }
+
+    @Test
+    public void testMultiPathSuccessGetPostMapping() {
+        final List<AnnotatedHttpServiceElement> getServiceElements = getServiceElements(
+                new MultiPathSuccessService(), "getPostMapping", HttpMethod.GET);
+        final Set<Route> getRoutes = getServiceElements.stream().map(AnnotatedHttpServiceElement::route)
+                                                       .collect(Collectors.toSet());
+        assertThat(getRoutes).containsOnly(Route.builder().path("/getMapping").methods(HttpMethod.GET).build());
+
+        final List<AnnotatedHttpServiceElement> postServiceElements = getServiceElements(
+                new MultiPathSuccessService(), "getPostMapping", HttpMethod.POST);
+        final Set<Route> postRoutes = postServiceElements.stream().map(AnnotatedHttpServiceElement::route)
+                                                         .collect(Collectors.toSet());
+        assertThat(postRoutes).containsOnly(Route.builder().path("/postMapping").methods(HttpMethod.POST)
+                                                 .build());
+    }
+
+    @Test
+    public void testMultiPathSuccessGetPostMappingByPath() {
+        final List<AnnotatedHttpServiceElement> getServiceElements = getServiceElements(
+                new MultiPathSuccessService(), "getPostMappingByPath", HttpMethod.GET);
+        final Set<Route> getRoutes = getServiceElements.stream().map(AnnotatedHttpServiceElement::route)
+                                                       .collect(Collectors.toSet());
+        assertThat(getRoutes).containsOnly(Route.builder().path("/path").methods(HttpMethod.GET).build());
+
+        final List<AnnotatedHttpServiceElement> postServiceElements = getServiceElements(
+                new MultiPathSuccessService(), "getPostMappingByPath", HttpMethod.POST);
+        final Set<Route> postRoutes = postServiceElements.stream().map(AnnotatedHttpServiceElement::route)
+                                                         .collect(Collectors.toSet());
+        assertThat(postRoutes).containsOnly(Route.builder().path("/path").methods(HttpMethod.POST).build());
+    }
+
+    @Test
+    public void testMultiPathAnnotations() {
+        final List<AnnotatedHttpServiceElement> getServiceElements = getServiceElements(
+                new MultiPathSuccessService(), "multiPathAnnotations", HttpMethod.GET);
+        final Set<Route> getRoutes = getServiceElements.stream().map(AnnotatedHttpServiceElement::route)
+                                                       .collect(Collectors.toSet());
+        assertThat(getRoutes).containsOnly(Route.builder().path("/path1").methods(HttpMethod.GET).build(),
+                                           Route.builder().path("/path2").methods(HttpMethod.GET).build());
+
+        final List<AnnotatedHttpServiceElement> postServiceElements = getServiceElements(
+                new MultiPathSuccessService(), "multiPathAnnotations", HttpMethod.POST);
+        final Set<Route> postRoutes = postServiceElements.stream().map(AnnotatedHttpServiceElement::route)
+                                                         .collect(Collectors.toSet());
+        assertThat(postRoutes).containsOnly(Route.builder().path("/path1").methods(HttpMethod.POST).build(),
+                                            Route.builder().path("/path2").methods(HttpMethod.POST).build());
+    }
+
+    @Test
+    public void testDuplicatePathAnnotations() {
+        final List<AnnotatedHttpServiceElement> getServiceElements = getServiceElements(
+                new MultiPathSuccessService(), "duplicatePathAnnotations", HttpMethod.GET);
+        assertThat(getServiceElements).hasSize(2);
+        final Set<Route> getRoutes = getServiceElements.stream().map(AnnotatedHttpServiceElement::route)
+                                                       .collect(Collectors.toSet());
+        assertThat(getRoutes).containsOnly(Route.builder().path("/path").methods(HttpMethod.GET).build(),
+                                           Route.builder().path("/path").methods(HttpMethod.GET).build());
+
+        final List<AnnotatedHttpServiceElement> postServiceElements = getServiceElements(
+                new MultiPathSuccessService(), "duplicatePathAnnotations", HttpMethod.POST);
+        assertThat(getServiceElements).hasSize(2);
+        final Set<Route> postRoutes = postServiceElements.stream().map(AnnotatedHttpServiceElement::route)
+                                                         .collect(Collectors.toSet());
+        assertThat(postRoutes).containsOnly(Route.builder().path("/path").methods(HttpMethod.POST).build(),
+                                            Route.builder().path("/path").methods(HttpMethod.POST).build());
+    }
+
+    @Test
+    public void testMultiPathFailingService() {
+        final MultiPathFailingService serviceObject = new MultiPathFailingService();
+        getMethods(MultiPathFailingService.class, HttpResponse.class).forEach(method -> {
+            assertThatThrownBy(() -> {
+                create("/", serviceObject, method, Lists.emptyList(), Lists.emptyList(), Lists.emptyList());
+            }, method.getName()).isInstanceOf(IllegalArgumentException.class);
+        });
+    }
+
+    private static List<AnnotatedHttpServiceElement> getServiceElements(
+            Object service, String methodName, HttpMethod httpMethod) {
+        return getMethods(service.getClass(), HttpResponse.class)
+                .filter(method -> method.getName().equals(methodName)).flatMap(
+                        method -> {
+                            final List<AnnotatedHttpServiceElement> annotatedHttpServices = create(
+                                    "/", service, method, Lists.emptyList(), Lists.emptyList(),
+                                    Lists.emptyList());
+                            return annotatedHttpServices.stream();
+                        }
+                )
+                .filter(element -> element.route().methods().contains(httpMethod))
+                .collect(Collectors.toList());
+    }
+
     private static List<Class<?>> values(List<DecoratorAndOrder> list) {
         return list.stream()
                    .map(DecoratorAndOrder::annotation)
@@ -202,17 +307,17 @@ public class AnnotatedHttpServiceFactoryTest {
         return list.stream().map(DecoratorAndOrder::order).collect(Collectors.toList());
     }
 
-    static class Decorator1 implements DecoratingServiceFunction<HttpRequest, HttpResponse> {
+    static class Decorator1 implements DecoratingHttpServiceFunction {
         @Override
-        public HttpResponse serve(Service<HttpRequest, HttpResponse> delegate, ServiceRequestContext ctx,
+        public HttpResponse serve(HttpService delegate, ServiceRequestContext ctx,
                                   HttpRequest req) throws Exception {
             return delegate.serve(ctx, req);
         }
     }
 
-    static class Decorator2 implements DecoratingServiceFunction<HttpRequest, HttpResponse> {
+    static class Decorator2 implements DecoratingHttpServiceFunction {
         @Override
-        public HttpResponse serve(Service<HttpRequest, HttpResponse> delegate, ServiceRequestContext ctx,
+        public HttpResponse serve(HttpService delegate, ServiceRequestContext ctx,
                                   HttpRequest req) throws Exception {
             return delegate.serve(ctx, req);
         }
@@ -245,8 +350,7 @@ public class AnnotatedHttpServiceFactoryTest {
     static class UserDefinedRepeatableDecoratorFactory
             implements DecoratorFactoryFunction<UserDefinedRepeatableDecorator> {
         @Override
-        public Function<Service<HttpRequest, HttpResponse>,
-                ? extends Service<HttpRequest, HttpResponse>> newDecorator(
+        public Function<? super HttpService, ? extends HttpService> newDecorator(
                 UserDefinedRepeatableDecorator parameter) {
             return service -> new SimpleDecoratingHttpService(service) {
                 @Override
@@ -356,6 +460,81 @@ public class AnnotatedHttpServiceFactoryTest {
 
         @Trace
         public HttpResponse trace() {
+            return HttpResponse.of(HttpStatus.OK);
+        }
+    }
+
+    static class MultiPathSuccessService {
+
+        @Get("/getMapping")
+        public HttpResponse getMapping() {
+            return HttpResponse.of(HttpStatus.OK);
+        }
+
+        @Get("/getMapping")
+        @Post("/postMapping")
+        public HttpResponse getPostMapping() {
+            return HttpResponse.of(HttpStatus.OK);
+        }
+
+        @Get
+        @Post
+        @Path("/path")
+        public HttpResponse getPostMappingByPath() {
+            return HttpResponse.of(HttpStatus.OK);
+        }
+
+        @Get
+        @Post
+        @Path("/path1")
+        @Path("/path2")
+        public HttpResponse multiPathAnnotations() {
+            return HttpResponse.of(HttpStatus.OK);
+        }
+
+        @Get
+        @Post
+        @Path("/path")
+        @Path("/path")
+        public HttpResponse duplicatePathAnnotations() {
+            return HttpResponse.of(HttpStatus.OK);
+        }
+    }
+
+    static class MultiPathFailingService {
+
+        @Get
+        public HttpResponse noGetMapping() {
+            return HttpResponse.of(HttpStatus.OK);
+        }
+
+        @Get
+        @Post
+        public HttpResponse noGetPostMapping() {
+            return HttpResponse.of(HttpStatus.OK);
+        }
+
+        @Get("/get")
+        @Post
+        public HttpResponse noPostMappingAndGetMapping() {
+            return HttpResponse.of(HttpStatus.OK);
+        }
+
+        @Get("/get")
+        @Path("/path")
+        public HttpResponse getPathMapping() {
+            return HttpResponse.of(HttpStatus.OK);
+        }
+
+        @Get("/get")
+        @Post
+        @Path("/path")
+        public HttpResponse noPostMappingAndGetPathMapping() {
+            return HttpResponse.of(HttpStatus.OK);
+        }
+
+        @Path("/path")
+        public HttpResponse pathMapping() {
             return HttpResponse.of(HttpStatus.OK);
         }
     }

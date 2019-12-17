@@ -145,13 +145,13 @@ class HttpResponseWrapperTest {
 
     private static HttpResponseWrapper httpResponseWrapper(DecodedHttpResponse res) {
         final HttpRequest req = HttpRequest.of(HttpMethod.GET, "/");
-        final ClientRequestContext cctx = ClientRequestContextBuilder.of(req).build();
+        final ClientRequestContext cctx = ClientRequestContext.builder(req).build();
         final InboundTrafficController controller = InboundTrafficController.disabled();
         final TestHttpResponseDecoder decoder =
                 new TestHttpResponseDecoder(cctx.log().channel(), controller);
 
         res.init(controller);
-        return decoder.addResponse(1, req, res, cctx.logBuilder(), cctx.responseTimeoutMillis(),
+        return decoder.addResponse(1, res, cctx, cctx.responseTimeoutMillis(),
                                    cctx.maxResponseLength());
     }
 

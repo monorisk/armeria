@@ -168,6 +168,11 @@ public interface RequestContext extends AttributeMap {
     SSLSession sslSession();
 
     /**
+     * Returns the {@link RequestId} of the current {@link Request} and {@link Response} pair.
+     */
+    RequestId id();
+
+    /**
      * Returns the HTTP method of the current {@link Request}.
      */
     HttpMethod method();
@@ -640,16 +645,8 @@ public interface RequestContext extends AttributeMap {
 
     /**
      * Creates a new {@link RequestContext} whose properties and {@link Attribute}s are copied from this
-     * {@link RequestContext}, except having its own {@link RequestLog}.
-     */
-    default RequestContext newDerivedContext() {
-        return newDerivedContext(request(), rpcRequest());
-    }
-
-    /**
-     * Creates a new {@link RequestContext} whose properties and {@link Attribute}s are copied from this
      * {@link RequestContext}, except having a different pair of {@link HttpRequest} and {@link RpcRequest}
      * and its own {@link RequestLog}.
      */
-    RequestContext newDerivedContext(@Nullable HttpRequest req, @Nullable RpcRequest rpcReq);
+    RequestContext newDerivedContext(RequestId id, @Nullable HttpRequest req, @Nullable RpcRequest rpcReq);
 }

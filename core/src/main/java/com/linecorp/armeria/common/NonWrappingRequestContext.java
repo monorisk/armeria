@@ -44,6 +44,7 @@ public abstract class NonWrappingRequestContext extends AbstractRequestContext {
     private final MeterRegistry meterRegistry;
     private final DefaultAttributeMap attrs = new DefaultAttributeMap();
     private final SessionProtocol sessionProtocol;
+    private RequestId id;
     private final HttpMethod method;
     private final String path;
     @Nullable
@@ -67,16 +68,18 @@ public abstract class NonWrappingRequestContext extends AbstractRequestContext {
      * Creates a new instance.
      *
      * @param sessionProtocol the {@link SessionProtocol} of the invocation
+     * @param id the {@link RequestId} associated with this context
      * @param req the {@link HttpRequest} associated with this context
      * @param rpcReq the {@link RpcRequest} associated with this context
      */
     protected NonWrappingRequestContext(
             MeterRegistry meterRegistry, SessionProtocol sessionProtocol,
-            HttpMethod method, String path, @Nullable String query,
+            RequestId id, HttpMethod method, String path, @Nullable String query,
             @Nullable HttpRequest req, @Nullable RpcRequest rpcReq) {
 
         this.meterRegistry = requireNonNull(meterRegistry, "meterRegistry");
         this.sessionProtocol = requireNonNull(sessionProtocol, "sessionProtocol");
+        this.id = requireNonNull(id, "id");
         this.method = requireNonNull(method, "method");
         this.path = requireNonNull(path, "path");
         this.query = query;
@@ -151,6 +154,11 @@ public abstract class NonWrappingRequestContext extends AbstractRequestContext {
     public <A extends SocketAddress> A localAddress() {
         final Channel ch = channel();
         return ch != null ? (A) ch.localAddress() : null;
+    }
+
+    @Override
+    public final RequestId id() {
+        return id;
     }
 
     @Override

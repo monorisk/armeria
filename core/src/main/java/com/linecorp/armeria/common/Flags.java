@@ -45,6 +45,7 @@ import com.linecorp.armeria.client.retry.RetryingHttpClient;
 import com.linecorp.armeria.client.retry.RetryingRpcClient;
 import com.linecorp.armeria.common.util.Exceptions;
 import com.linecorp.armeria.common.util.Sampler;
+import com.linecorp.armeria.common.util.SystemInfo;
 import com.linecorp.armeria.internal.SslContextUtil;
 import com.linecorp.armeria.server.RoutingContext;
 import com.linecorp.armeria.server.ServerBuilder;
@@ -59,6 +60,8 @@ import io.netty.handler.codec.http2.Http2CodecUtil;
 import io.netty.handler.codec.http2.Http2Exception;
 import io.netty.handler.ssl.OpenSsl;
 import io.netty.handler.ssl.SslContextBuilder;
+import io.netty.resolver.DefaultAddressResolverGroup;
+import io.netty.resolver.dns.DnsNameResolverTimeoutException;
 import io.netty.util.ReferenceCountUtil;
 
 /**
@@ -117,9 +120,8 @@ public final class Flags {
     private static final boolean HAS_WSLENV = System.getenv("WSLENV") != null;
     private static final boolean USE_EPOLL = getBoolean("useEpoll", isEpollAvailable(),
                                                         value -> isEpollAvailable() || !value);
-
-    private static final boolean USE_OPENSSL = getBoolean("useOpenSsl", OpenSsl.isAvailable(),
-                                                          value -> OpenSsl.isAvailable() || !value);
+    @Nullable
+    private static Boolean useOpenSsl;
 
     private static final boolean DUMP_OPENSSL_INFO = getBoolean("dumpOpenSslInfo", false);
 
@@ -282,6 +284,10 @@ public final class Flags {
     private static final Optional<String> HEADER_VALUE_CACHE_SPEC =
             caffeineSpec("headerValueCache", DEFAULT_HEADER_VALUE_CACHE_SPEC);
 
+    private static final String DEFAULT_FILE_SERVICE_CACHE_SPEC = "maximumSize=1024";
+    private static final Optional<String> FILE_SERVICE_CACHE_SPEC =
+            caffeineSpec("fileServiceCache", DEFAULT_FILE_SERVICE_CACHE_SPEC);
+
     private static final String DEFAULT_CACHED_HEADERS =
             ":authority,:scheme,:method,accept-encoding,content-type";
     private static final List<String> CACHED_HEADERS =
@@ -292,6 +298,8 @@ public final class Flags {
     private static final ExceptionVerbosity ANNOTATED_SERVICE_EXCEPTION_VERBOSITY =
             exceptionLoggingMode("annotatedServiceExceptionVerbosity",
                                  DEFAULT_ANNOTATED_SERVICE_EXCEPTION_VERBOSITY);
+
+    private static final boolean USE_JDK_DNS_RESOLVER = getBoolean("useJdkDnsResolver", false);
 
     static {
         if (!isEpollAvailable()) {
@@ -308,34 +316,15 @@ public final class Flags {
         } else if (USE_EPOLL) {
             logger.info("Using /dev/epoll");
         }
-
-        if (!OpenSsl.isAvailable()) {
-            final Throwable cause = Exceptions.peel(OpenSsl.unavailabilityCause());
-            logger.info("OpenSSL not available: {}", cause.toString());
-        } else if (USE_OPENSSL) {
-            logger.info("Using OpenSSL: {}, 0x{}",
-                        OpenSsl.versionString(),
-                        Long.toHexString(OpenSsl.version() & 0xFFFFFFFFL));
-
-            if (dumpOpenSslInfo()) {
-                final SSLEngine engine = SslContextUtil.createSslContext(
-                        SslContextBuilder::forClient,
-                        false,
-                        unused -> {}).newEngine(ByteBufAllocator.DEFAULT);
-                logger.info("All available SSL protocols: {}",
-                            ImmutableList.copyOf(engine.getSupportedProtocols()));
-                logger.info("Default enabled SSL protocols: {}", SslContextUtil.DEFAULT_PROTOCOLS);
-                ReferenceCountUtil.release(engine);
-                logger.info("All available SSL ciphers: {}", OpenSsl.availableJavaCipherSuites());
-                logger.info("Default enabled SSL ciphers: {}", SslContextUtil.DEFAULT_CIPHERS);
-            }
-        }
     }
 
     private static boolean isEpollAvailable() {
-        // Netty epoll transport does not work with WSL (Windows Sybsystem for Linux) yet.
-        // TODO(trustin): Re-enable on WSL if https://github.com/Microsoft/WSL/issues/1982 is resolved.
-        return Epoll.isAvailable() && !HAS_WSLENV;
+        if (SystemInfo.isLinux()) {
+            // Netty epoll transport does not work with WSL (Windows Sybsystem for Linux) yet.
+            // TODO(trustin): Re-enable on WSL if https://github.com/Microsoft/WSL/issues/1982 is resolved.
+            return Epoll.isAvailable() && !HAS_WSLENV;
+        }
+        return false;
     }
 
     /**
@@ -422,7 +411,34 @@ public final class Flags {
      * {@code -Dcom.linecorp.armeria.useOpenSsl=false} JVM option to disable it.
      */
     public static boolean useOpenSsl() {
-        return USE_OPENSSL;
+        if (useOpenSsl != null) {
+            return useOpenSsl;
+        }
+        final boolean useOpenSsl = getBoolean("useOpenSsl", true);
+        if (!useOpenSsl) {
+            // OpenSSL explicitly disabled
+            return Flags.useOpenSsl = false;
+        }
+        if (!OpenSsl.isAvailable()) {
+            final Throwable cause = Exceptions.peel(OpenSsl.unavailabilityCause());
+            logger.info("OpenSSL not available: {}", cause.toString());
+            return Flags.useOpenSsl = false;
+        }
+        logger.info("Using OpenSSL: {}, 0x{}", OpenSsl.versionString(),
+                    Long.toHexString(OpenSsl.version() & 0xFFFFFFFFL));
+        if (dumpOpenSslInfo()) {
+            final SSLEngine engine = SslContextUtil.createSslContext(
+                    SslContextBuilder::forClient,
+                    false,
+                    unused -> {}).newEngine(ByteBufAllocator.DEFAULT);
+            logger.info("All available SSL protocols: {}",
+                        ImmutableList.copyOf(engine.getSupportedProtocols()));
+            logger.info("Default enabled SSL protocols: {}", SslContextUtil.DEFAULT_PROTOCOLS);
+            ReferenceCountUtil.release(engine);
+            logger.info("All available SSL ciphers: {}", OpenSsl.availableJavaCipherSuites());
+            logger.info("Default enabled SSL ciphers: {}", SslContextUtil.DEFAULT_CIPHERS);
+        }
+        return Flags.useOpenSsl = true;
     }
 
     /**
@@ -773,6 +789,19 @@ public final class Flags {
     }
 
     /**
+     * Returns the value of the {@code fileServiceCache} parameter. It would be used to create a Caffeine
+     * {@link Cache} instance using {@link CaffeineSpec} for caching file entries.
+     *
+     * <p>The default value of this flag is {@value DEFAULT_FILE_SERVICE_CACHE_SPEC}. Specify the
+     * {@code -Dcom.linecorp.armeria.fileServiceCache=<spec>} JVM option to override the default value.
+     * For example, {@code -Dcom.linecorp.armeria.fileServiceCache=maximumSize=1024,expireAfterAccess=600s}.
+     * Also, specify {@code -Dcom.linecorp.armeria.fileServiceCache=off} JVM option to disable it.
+     */
+    public static Optional<String> fileServiceCacheSpec() {
+        return FILE_SERVICE_CACHE_SPEC;
+    }
+
+    /**
      * Returns the value of the {@code cachedHeaders} parameter which contains a comma-separated list of
      * headers whose values are cached using {@code headerValueCache}.
      *
@@ -818,6 +847,21 @@ public final class Flags {
      */
     public static ExceptionVerbosity annotatedServiceExceptionVerbosity() {
         return ANNOTATED_SERVICE_EXCEPTION_VERBOSITY;
+    }
+
+    /**
+     * Enables {@link DefaultAddressResolverGroup} that resolves domain name using JDK's built-in domain name
+     * lookup mechanism.
+     * Note that JDK's built-in resolver performs a blocking name lookup from the caller thread, and thus
+     * this flag should be enabled only when the default asynchronous resolver does not work as expected,
+     * for example by always throwing a {@link DnsNameResolverTimeoutException}.
+     *
+     * <p>This flag is disabled by default.
+     * Specify the {@code -Dcom.linecorp.armeria.useJdkDnsResolver=true} JVM option
+     * to enable it.
+     */
+    public static boolean useJdkDnsResolver() {
+        return USE_JDK_DNS_RESOLVER;
     }
 
     private static Optional<String> caffeineSpec(String name, String defaultValue) {
