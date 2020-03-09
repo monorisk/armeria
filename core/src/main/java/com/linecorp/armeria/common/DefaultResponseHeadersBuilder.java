@@ -18,7 +18,7 @@ package com.linecorp.armeria.common;
 import static com.google.common.base.Preconditions.checkState;
 
 final class DefaultResponseHeadersBuilder
-        extends AbstractHttpHeadersBuilder<DefaultResponseHeadersBuilder, ResponseHeaders>
+        extends AbstractHttpHeadersBuilder<ResponseHeadersBuilder>
         implements ResponseHeadersBuilder {
 
     private static final String STATUS_HEADER_MISSING = ":status header does not exist.";
@@ -39,7 +39,11 @@ final class DefaultResponseHeadersBuilder
 
         final HttpHeadersBase parent = parent();
         if (parent != null) {
-            return (ResponseHeaders) parent;
+            if (parent instanceof ResponseHeaders) {
+                return (ResponseHeaders) parent;
+            } else {
+                return updateParent(new DefaultResponseHeaders(parent));
+            }
         }
 
         // No headers were set.

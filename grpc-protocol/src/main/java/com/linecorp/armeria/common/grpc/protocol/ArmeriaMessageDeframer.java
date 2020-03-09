@@ -62,6 +62,7 @@ import javax.annotation.Nullable;
 import com.google.common.annotations.VisibleForTesting;
 
 import com.linecorp.armeria.common.HttpData;
+import com.linecorp.armeria.internal.grpc.protocol.StatusCodes;
 
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteBufAllocator;
@@ -71,7 +72,8 @@ import io.netty.buffer.Unpooled;
 
 /**
  * A deframer of messages transported in the gRPC wire format. See
- * <a href="https://grpc.io/docs/guides/wire.html">gRPC Wire Protocol</a> for more detail on the protocol.
+ * <a href="https://github.com/grpc/grpc/blob/master/doc/PROTOCOL-HTTP2.md">gRPC Wire Format</a>
+ * for more detail on the protocol.
  *
  * <p>The logic has been mostly copied from {@code io.grpc.internal.MessageDeframer}, while removing the buffer
  * abstraction in favor of using {@link ByteBuf} directly, and allowing the delivery of uncompressed frames as
@@ -100,11 +102,17 @@ public class ArmeriaMessageDeframer implements AutoCloseable {
         @Nullable
         private final InputStream stream;
 
+        /**
+         * Creates a new instance with the specified {@link ByteBuf} and {@code type}.
+         */
         @VisibleForTesting
         public DeframedMessage(ByteBuf buf, int type) {
             this(requireNonNull(buf, "buf"), null, type);
         }
 
+        /**
+         * Creates a new instance with the specified {@link InputStream} and {@code type}.
+         */
         @VisibleForTesting
         public DeframedMessage(InputStream stream, int type) {
             this(null, requireNonNull(stream, "stream"), type);
@@ -116,16 +124,31 @@ public class ArmeriaMessageDeframer implements AutoCloseable {
             this.type = type;
         }
 
+        /**
+         * Returns the {@link ByteBuf}.
+         *
+         * @return the {@link ByteBuf}. {@code null} if not created with
+         *         {@link #DeframedMessage(ByteBuf, int)}.
+         */
         @Nullable
         public ByteBuf buf() {
             return buf;
         }
 
+        /**
+         * Returns the {@link InputStream}.
+         *
+         * @return the {@link InputStream}. {@code null} if not created with
+         *         {@link #DeframedMessage(InputStream, int)}.
+         */
         @Nullable
         public InputStream stream() {
             return stream;
         }
 
+        /**
+         * Returns the type.
+         */
         public int type() {
             return type;
         }

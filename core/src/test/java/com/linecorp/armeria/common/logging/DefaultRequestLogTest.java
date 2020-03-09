@@ -34,7 +34,6 @@ import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
 
 import com.linecorp.armeria.client.ClientRequestContext;
-import com.linecorp.armeria.client.ClientRequestContextBuilder;
 import com.linecorp.armeria.common.AggregatedHttpRequest;
 import com.linecorp.armeria.common.HttpData;
 import com.linecorp.armeria.common.HttpHeaderNames;
@@ -49,6 +48,7 @@ import com.linecorp.armeria.common.RpcRequest;
 import com.linecorp.armeria.common.RpcResponse;
 import com.linecorp.armeria.common.SerializationFormat;
 import com.linecorp.armeria.common.SessionProtocol;
+import com.linecorp.armeria.server.ServiceRequestContext;
 import com.linecorp.armeria.testing.internal.AnticipatedException;
 
 import io.netty.channel.Channel;
@@ -222,9 +222,9 @@ public class DefaultRequestLogTest {
         final RequestHeaders reqHeaders =
                 RequestHeaders.of(HttpMethod.POST, "/armeria/awesome",
                                   HttpHeaderNames.CONTENT_LENGTH, VERY_LONG_STRING.length());
-        final HttpRequest req = HttpRequest.of(
-                AggregatedHttpRequest.of(reqHeaders, HttpData.ofUtf8(VERY_LONG_STRING)));
-        final ClientRequestContext ctx = ClientRequestContextBuilder.of(req).build();
+        final HttpRequest req = AggregatedHttpRequest.of(reqHeaders, HttpData.ofUtf8(VERY_LONG_STRING))
+                                                     .toHttpRequest();
+        final ClientRequestContext ctx = ClientRequestContext.builder(req).build();
 
         final RequestLogBuilder logBuilder = ctx.logBuilder();
         logBuilder.requestLength(1000000000);
@@ -249,9 +249,9 @@ public class DefaultRequestLogTest {
         final RequestHeaders reqHeaders =
                 RequestHeaders.of(HttpMethod.POST, "/armeria/awesome",
                                   HttpHeaderNames.CONTENT_LENGTH, VERY_LONG_STRING.length());
-        final HttpRequest req = HttpRequest.of(
-                AggregatedHttpRequest.of(reqHeaders, HttpData.ofUtf8(VERY_LONG_STRING)));
-        final ClientRequestContext ctx = ClientRequestContextBuilder.of(req).build();
+        final HttpRequest req = AggregatedHttpRequest.of(reqHeaders, HttpData.ofUtf8(VERY_LONG_STRING))
+                                                     .toHttpRequest();
+        final ClientRequestContext ctx = ClientRequestContext.builder(req).build();
         final RequestLogBuilder logBuilder = ctx.logBuilder();
         logBuilder.endRequest();
 
@@ -273,5 +273,21 @@ public class DefaultRequestLogTest {
                 VERY_LONG_STRING.length() +
                 responseTrailers.toString().length() +
                 cause.toString().length());
+    }
+
+    @Test
+    public void testId_Assign() {
+        final RequestHeaders reqHeaders =
+                RequestHeaders.of(HttpMethod.POST, "/armeria/id",
+                                  HttpHeaderNames.CONTENT_LENGTH, VERY_LONG_STRING.length());
+        final HttpRequest req = AggregatedHttpRequest.of(reqHeaders, HttpData.ofUtf8(VERY_LONG_STRING))
+                                                     .toHttpRequest();
+        final ClientRequestContext cctx = ClientRequestContext.builder(req).build();
+        assertThat(cctx.log().id()).isNotNull();
+        assertThat(cctx.log().id()).isEqualTo(cctx.id());
+
+        final ServiceRequestContext sctx = ServiceRequestContext.of(req);
+        assertThat(sctx.log().id()).isNotNull();
+        assertThat(sctx.log().id()).isEqualTo(sctx.id());
     }
 }

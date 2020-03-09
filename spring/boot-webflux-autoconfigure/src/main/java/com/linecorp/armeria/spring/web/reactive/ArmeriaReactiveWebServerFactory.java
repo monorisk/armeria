@@ -17,7 +17,7 @@ package com.linecorp.armeria.spring.web.reactive;
 
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.collect.ImmutableList.toImmutableList;
-import static com.linecorp.armeria.internal.spring.ArmeriaConfigurationUtil.configureAnnotatedHttpServices;
+import static com.linecorp.armeria.internal.spring.ArmeriaConfigurationUtil.configureAnnotatedServices;
 import static com.linecorp.armeria.internal.spring.ArmeriaConfigurationUtil.configureGrpcServices;
 import static com.linecorp.armeria.internal.spring.ArmeriaConfigurationUtil.configureHttpServices;
 import static com.linecorp.armeria.internal.spring.ArmeriaConfigurationUtil.configurePorts;
@@ -63,6 +63,7 @@ import com.linecorp.armeria.common.SessionProtocol;
 import com.linecorp.armeria.server.Route;
 import com.linecorp.armeria.server.Server;
 import com.linecorp.armeria.server.ServerBuilder;
+import com.linecorp.armeria.server.docs.DocService;
 import com.linecorp.armeria.server.docs.DocServiceBuilder;
 import com.linecorp.armeria.server.healthcheck.HealthChecker;
 import com.linecorp.armeria.spring.AnnotatedServiceRegistrationBean;
@@ -131,6 +132,8 @@ public class ArmeriaReactiveWebServerFactory extends AbstractReactiveWebServerFa
     @Override
     public WebServer getWebServer(HttpHandler httpHandler) {
         final ServerBuilder sb = Server.builder();
+        sb.disableServerHeader();
+        sb.disableDateHeader();
 
         final SessionProtocol protocol;
         final Ssl ssl = getSsl();
@@ -203,7 +206,7 @@ public class ArmeriaReactiveWebServerFactory extends AbstractReactiveWebServerFa
                                                   @Nullable String serverHeader) {
         final ArmeriaHttpHandlerAdapter handler =
                 new ArmeriaHttpHandlerAdapter(httpHandler, factoryWrapper);
-        return sb.service(Route.builder().catchAll().build(), (ctx, req) -> {
+        return sb.service(Route.ofCatchAll(), (ctx, req) -> {
             final CompletableFuture<HttpResponse> future = new CompletableFuture<>();
             final HttpResponse response = HttpResponse.from(future);
             final Disposable disposable = handler.handle(ctx, req, future, serverHeader).subscribe();
@@ -226,7 +229,7 @@ public class ArmeriaReactiveWebServerFactory extends AbstractReactiveWebServerFa
                                            : null;
 
         configurePorts(sb, settings.getPorts());
-        final DocServiceBuilder docServiceBuilder = new DocServiceBuilder();
+        final DocServiceBuilder docServiceBuilder = DocService.builder();
         configureThriftServices(sb,
                                 docServiceBuilder,
                                 findBeans(ThriftServiceRegistrationBean.class),
@@ -240,11 +243,11 @@ public class ArmeriaReactiveWebServerFactory extends AbstractReactiveWebServerFa
         configureHttpServices(sb,
                               findBeans(HttpServiceRegistrationBean.class),
                               meterIdPrefixFunctionFactory);
-        configureAnnotatedHttpServices(sb,
-                                       docServiceBuilder,
-                                       findBeans(AnnotatedServiceRegistrationBean.class),
-                                       meterIdPrefixFunctionFactory,
-                                       settings.getDocsPath());
+        configureAnnotatedServices(sb,
+                                   docServiceBuilder,
+                                   findBeans(AnnotatedServiceRegistrationBean.class),
+                                   meterIdPrefixFunctionFactory,
+                                   settings.getDocsPath());
         configureServerWithArmeriaSettings(sb, settings,
                                            findBean(MeterRegistry.class).orElse(Metrics.globalRegistry),
                                            findBeans(HealthChecker.class));

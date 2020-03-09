@@ -62,15 +62,18 @@ class ClientRequestContextInitFailureTest {
                 assertThat(actualCause).isSameAs(cause);
             });
         }
+
+        // Thread-local state must be cleaned up.
+        assertThat(ClientThreadLocalState.get()).isNull();
     }
 
     private static void assertFailure(String authority, Consumer<Throwable> requirements) {
         final AtomicReference<ClientRequestContext> capturedCtx = new AtomicReference<>();
-        final HttpClient client = new HttpClientBuilder("http://" + authority)
-                .decorator((delegate, ctx, req) -> {
-                    capturedCtx.set(ctx);
-                    return delegate.execute(ctx, req);
-                }).build();
+        final WebClient client = WebClient.builder("http://" + authority)
+                                          .decorator((delegate, ctx, req) -> {
+                                              capturedCtx.set(ctx);
+                                              return delegate.execute(ctx, req);
+                                          }).build();
 
         final Throwable actualCause = catchThrowable(() -> client.get("/").aggregate().join()).getCause();
         assertThat(actualCause).isInstanceOf(UnprocessedRequestException.class);

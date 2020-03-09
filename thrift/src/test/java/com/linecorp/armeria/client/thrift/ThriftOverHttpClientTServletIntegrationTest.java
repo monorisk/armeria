@@ -63,7 +63,6 @@ import org.junit.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import com.linecorp.armeria.client.ClientBuilder;
 import com.linecorp.armeria.client.Clients;
 import com.linecorp.armeria.client.SessionProtocolNegotiationCache;
 import com.linecorp.armeria.client.SessionProtocolNegotiationException;
@@ -193,7 +192,7 @@ public class ThriftOverHttpClientTServletIntegrationTest {
     }
 
     @Before
-    public void setup() {
+    public void setUp() {
         SessionProtocolNegotiationCache.clear();
         sendConnectionClose.set(false);
     }
@@ -277,7 +276,8 @@ public class ThriftOverHttpClientTServletIntegrationTest {
             fail();
         } catch (UnprocessedRequestException e) {
             assertThat(e).hasCauseInstanceOf(SessionProtocolNegotiationException.class);
-            SessionProtocolNegotiationException cause = (SessionProtocolNegotiationException) e.getCause();
+            final SessionProtocolNegotiationException cause =
+                    (SessionProtocolNegotiationException) e.getCause();
 
             // Test if a failed upgrade attempt triggers an exception with
             // both 'expected' and 'actual' protocols.
@@ -292,7 +292,8 @@ public class ThriftOverHttpClientTServletIntegrationTest {
             fail();
         } catch (UnprocessedRequestException e) {
             assertThat(e).hasCauseInstanceOf(SessionProtocolNegotiationException.class);
-            SessionProtocolNegotiationException cause = (SessionProtocolNegotiationException) e.getCause();
+            final SessionProtocolNegotiationException cause =
+                    (SessionProtocolNegotiationException) e.getCause();
             // Test if no upgrade attempt is made thanks to the cache.
             assertThat(cause.expected()).isEqualTo(H2C);
             // It has no idea about the actual protocol, because it did not create any connection.
@@ -303,13 +304,13 @@ public class ThriftOverHttpClientTServletIntegrationTest {
     private static HelloService.Iface newSchemeCapturingClient(
             String uri, AtomicReference<SessionProtocol> sessionProtocol) {
 
-        return new ClientBuilder(uri)
-                .rpcDecorator((delegate, ctx, req) -> {
-                    ctx.log().addListener(log -> sessionProtocol.set(log.sessionProtocol()),
-                                          RequestLogAvailability.REQUEST_START);
-                    return delegate.execute(ctx, req);
-                })
-                .build(HelloService.Iface.class);
+        return Clients.builder(uri)
+                      .rpcDecorator((delegate, ctx, req) -> {
+                          ctx.log().addListener(log -> sessionProtocol.set(log.sessionProtocol()),
+                                                RequestLogAvailability.REQUEST_START);
+                          return delegate.execute(ctx, req);
+                      })
+                      .build(HelloService.Iface.class);
     }
 
     private static String http1uri(SessionProtocol protocol) {

@@ -29,7 +29,6 @@ import org.slf4j.LoggerFactory;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Ascii;
 import com.google.common.collect.ImmutableSet;
-import com.google.common.math.LongMath;
 
 import com.linecorp.armeria.common.AggregatedHttpResponse;
 import com.linecorp.armeria.common.HttpHeaderNames;
@@ -46,7 +45,7 @@ import com.linecorp.armeria.server.Server;
 import com.linecorp.armeria.server.ServerListenerAdapter;
 import com.linecorp.armeria.server.ServiceConfig;
 import com.linecorp.armeria.server.ServiceRequestContext;
-import com.linecorp.armeria.server.TransientService;
+import com.linecorp.armeria.server.TransientHttpService;
 
 import io.netty.util.AsciiString;
 import io.netty.util.concurrent.FutureListener;
@@ -95,7 +94,7 @@ import it.unimi.dsi.fastutil.objects.ObjectLinkedOpenHashSet;
  *
  * @see HealthCheckServiceBuilder
  */
-public final class HealthCheckService implements HttpService, TransientService<HttpRequest, HttpResponse> {
+public final class HealthCheckService implements TransientHttpService {
 
     private static final Logger logger = LoggerFactory.getLogger(HealthCheckService.class);
     private static final AsciiString ARMERIA_LPHC = HttpHeaderNames.of("armeria-lphc");
@@ -303,7 +302,17 @@ public final class HealthCheckService implements HttpService, TransientService<H
                     });
 
                     updateRequestTimeout(ctx, longPollingTimeoutMillis);
-                    return HttpResponse.from(future);
+
+                    // Create a deferred response from the response future.
+                    final HttpResponse deferredRes = HttpResponse.from(future);
+
+                    // Cancel the scheduled timeout task if the deferred response fails,
+                    // so that it's removed from the event loop's task queue quickly.
+                    deferredRes.completionFuture().exceptionally(cause -> {
+                        timeoutFuture.cancel(false);
+                        return null;
+                    });
+                    return deferredRes;
                 } else {
                     // State has been changed before we acquire the lock.
                     // Fall through because there's no need for long polling.
@@ -397,7 +406,7 @@ public final class HealthCheckService implements HttpService, TransientService<H
     private static void updateRequestTimeout(ServiceRequestContext ctx, long longPollingTimeoutMillis) {
         final long requestTimeoutMillis = ctx.requestTimeoutMillis();
         if (requestTimeoutMillis > 0) {
-            ctx.setRequestTimeoutMillis(LongMath.saturatedAdd(longPollingTimeoutMillis, requestTimeoutMillis));
+            ctx.extendRequestTimeoutMillis(longPollingTimeoutMillis);
         }
     }
 
@@ -414,7 +423,7 @@ public final class HealthCheckService implements HttpService, TransientService<H
         if (method == HttpMethod.HEAD) {
             return HttpResponse.of(aRes.headers());
         } else {
-            return HttpResponse.of(aRes);
+            return aRes.toHttpResponse();
         }
     }
 

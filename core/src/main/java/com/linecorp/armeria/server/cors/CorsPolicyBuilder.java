@@ -15,11 +15,13 @@
  */
 package com.linecorp.armeria.server.cors;
 
+import com.google.common.collect.ImmutableList;
+
 /**
  * Builds a new {@link CorsPolicy}.
  * <h2>Example</h2>
  * <pre>{@code
- * CorsPolicyBuilder cb = new CorsPolicyBuilder("http://example.com");
+ * CorsPolicyBuilder cb = CorsPolicy.builder("http://example.com");
  * cb.allowRequestMethods(HttpMethod.POST, HttpMethod.GET)
  *   .allowRequestHeaders("allow_request_header")
  *   .exposeHeaders("expose_header_1", "expose_header_2")
@@ -29,11 +31,33 @@ package com.linecorp.armeria.server.cors;
  *
  */
 public final class CorsPolicyBuilder extends AbstractCorsPolicyBuilder<CorsPolicyBuilder> {
+
+    /**
+     * Creates a new instance {@link CorsPolicyBuilder}.
+     *
+     * @deprecated Use {@link CorsPolicy#builder()}.
+     */
+    @Deprecated
+    public CorsPolicyBuilder() {}
+
     /**
      * Creates a new instance with the specified {@code origins}.
+     *
+     * @deprecated Use {@link CorsPolicy#builder(String...)}.
      */
+    @Deprecated
     public CorsPolicyBuilder(String... origins) {
-        super(origins);
+        super(ImmutableList.copyOf(origins));
+    }
+
+    /**
+     * Creates a new instance with the specified {@code origins}.
+     *
+     * @deprecated Use {@link CorsPolicy#builder(Iterable)}.
+     */
+    @Deprecated
+    public CorsPolicyBuilder(Iterable<String> origins) {
+        super(ImmutableList.copyOf(origins));
     }
 
     /**

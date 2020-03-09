@@ -34,10 +34,9 @@ import org.junit.rules.Timeout;
 
 import com.google.protobuf.ByteString;
 
-import com.linecorp.armeria.client.ClientBuilder;
 import com.linecorp.armeria.client.ClientFactory;
-import com.linecorp.armeria.client.ClientFactoryBuilder;
-import com.linecorp.armeria.client.HttpClient;
+import com.linecorp.armeria.client.Clients;
+import com.linecorp.armeria.client.WebClient;
 import com.linecorp.armeria.client.metric.MetricCollectingClient;
 import com.linecorp.armeria.common.HttpHeaderNames;
 import com.linecorp.armeria.common.MediaType;
@@ -103,7 +102,7 @@ public class GrpcMetricsIntegrationTest {
     };
 
     private static final ClientFactory clientFactory =
-            new ClientFactoryBuilder().meterRegistry(registry).build();
+            ClientFactory.builder().meterRegistry(registry).build();
 
     @AfterClass
     public static void closeClientFactory() {
@@ -193,10 +192,12 @@ public class GrpcMetricsIntegrationTest {
 
     private static void makeRequest(String name) throws Exception {
         final String uri = server.uri(GrpcSerializationFormats.PROTO, "/");
-        final TestServiceBlockingStub client = new ClientBuilder(uri)
-                .factory(clientFactory)
-                .decorator(MetricCollectingClient.newDecorator(MeterIdPrefixFunction.ofDefault("client")))
-                .build(TestServiceBlockingStub.class);
+        final TestServiceBlockingStub client =
+                Clients.builder(uri)
+                       .factory(clientFactory)
+                       .decorator(MetricCollectingClient.newDecorator(
+                               MeterIdPrefixFunction.ofDefault("client")))
+                       .build(TestServiceBlockingStub.class);
 
         final SimpleRequest request =
                 SimpleRequest.newBuilder()
@@ -211,10 +212,11 @@ public class GrpcMetricsIntegrationTest {
     }
 
     private static void makeUnframedRequest(String name) throws Exception {
-        final HttpClient client = new ClientBuilder(server.uri(SerializationFormat.NONE, "/"))
-                .factory(clientFactory)
-                .addHttpHeader(HttpHeaderNames.CONTENT_TYPE, MediaType.PROTOBUF.toString())
-                .build(HttpClient.class);
+        final WebClient client =
+                Clients.builder(server.uri(SerializationFormat.NONE, "/"))
+                       .factory(clientFactory)
+                       .addHttpHeader(HttpHeaderNames.CONTENT_TYPE, MediaType.PROTOBUF.toString())
+                       .build(WebClient.class);
 
         final SimpleRequest request =
                 SimpleRequest.newBuilder()

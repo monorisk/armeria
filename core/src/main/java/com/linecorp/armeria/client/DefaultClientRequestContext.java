@@ -13,21 +13,26 @@
  * License for the specific language governing permissions and limitations
  * under the License.
  */
-
 package com.linecorp.armeria.client;
 
+import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkState;
 import static java.util.Objects.requireNonNull;
 
 import java.time.Duration;
+import java.time.Instant;
 import java.util.Iterator;
+import java.util.List;
 import java.util.Map.Entry;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReferenceFieldUpdater;
 import java.util.function.Consumer;
 import java.util.function.Function;
 
 import javax.annotation.Nullable;
 import javax.net.ssl.SSLSession;
+
+import com.google.common.math.LongMath;
 
 import com.linecorp.armeria.client.endpoint.EndpointGroup;
 import com.linecorp.armeria.client.endpoint.EndpointGroupException;
@@ -39,7 +44,11 @@ import com.linecorp.armeria.common.HttpHeadersBuilder;
 import com.linecorp.armeria.common.HttpMethod;
 import com.linecorp.armeria.common.HttpRequest;
 import com.linecorp.armeria.common.NonWrappingRequestContext;
+import com.linecorp.armeria.common.Request;
+import com.linecorp.armeria.common.RequestContext;
 import com.linecorp.armeria.common.RequestHeaders;
+import com.linecorp.armeria.common.RequestId;
+import com.linecorp.armeria.common.Response;
 import com.linecorp.armeria.common.RpcRequest;
 import com.linecorp.armeria.common.SessionProtocol;
 import com.linecorp.armeria.common.logging.DefaultRequestLog;
@@ -47,20 +56,20 @@ import com.linecorp.armeria.common.logging.RequestLog;
 import com.linecorp.armeria.common.logging.RequestLogAvailability;
 import com.linecorp.armeria.common.logging.RequestLogBuilder;
 import com.linecorp.armeria.common.util.ReleasableHolder;
+import com.linecorp.armeria.common.util.TimeoutController;
+import com.linecorp.armeria.server.ServiceRequestContext;
 
 import io.micrometer.core.instrument.MeterRegistry;
 import io.netty.buffer.ByteBufAllocator;
 import io.netty.buffer.PooledByteBufAllocator;
 import io.netty.channel.Channel;
 import io.netty.channel.EventLoop;
-import io.netty.util.Attribute;
+import io.netty.util.AttributeKey;
 
 /**
  * Default {@link ClientRequestContext} implementation.
  */
 public class DefaultClientRequestContext extends NonWrappingRequestContext implements ClientRequestContext {
-    static final ThreadLocal<Consumer<ClientRequestContext>> THREAD_LOCAL_CONTEXT_CUSTOMIZER =
-            new ThreadLocal<>();
 
     private static final AtomicReferenceFieldUpdater<DefaultClientRequestContext, HttpHeaders>
             additionalRequestHeadersUpdater = AtomicReferenceFieldUpdater.newUpdater(
@@ -78,11 +87,17 @@ public class DefaultClientRequestContext extends NonWrappingRequestContext imple
     private Endpoint endpoint;
     @Nullable
     private final String fragment;
+    @Nullable
+    private final ServiceRequestContext root;
 
     private final DefaultRequestLog log;
 
     private long writeTimeoutMillis;
     private long responseTimeoutMillis;
+    @Nullable
+    private Runnable responseTimeoutHandler;
+    @Nullable
+    private TimeoutController responseTimeoutController;
     private long maxResponseLength;
 
     @SuppressWarnings("FieldMayBeFinal") // Updated via `additionalRequestHeadersUpdater`
@@ -91,21 +106,28 @@ public class DefaultClientRequestContext extends NonWrappingRequestContext imple
     @Nullable
     private String strVal;
 
+    // We use null checks which are faster than checking if a list is empty,
+    // because it is more common to have no customizers than to have any.
+    @Nullable
+    private volatile List<Consumer<? super ClientRequestContext>> customizers;
+
     /**
      * Creates a new instance. Note that {@link #init(Endpoint)} method must be invoked to finish
      * the construction of this context.
      *
      * @param eventLoop the {@link EventLoop} associated with this context
      * @param sessionProtocol the {@link SessionProtocol} of the invocation
+     * @param id the {@link RequestId} that represents the identifier of the current {@link Request}
+     *           and {@link Response} pair.
      * @param req the {@link HttpRequest} associated with this context
      * @param rpcReq the {@link RpcRequest} associated with this context
      */
     public DefaultClientRequestContext(
             EventLoop eventLoop, MeterRegistry meterRegistry, SessionProtocol sessionProtocol,
-            HttpMethod method, String path, @Nullable String query, @Nullable String fragment,
+            RequestId id, HttpMethod method, String path, @Nullable String query, @Nullable String fragment,
             ClientOptions options, @Nullable HttpRequest req, @Nullable RpcRequest rpcReq) {
         this(null, requireNonNull(eventLoop, "eventLoop"), meterRegistry, sessionProtocol,
-             method, path, query, fragment, options, req, rpcReq);
+             id, method, path, query, fragment, options, req, rpcReq);
     }
 
     /**
@@ -114,28 +136,42 @@ public class DefaultClientRequestContext extends NonWrappingRequestContext imple
      *
      * @param factory the {@link ClientFactory} which is used to acquire an {@link EventLoop}
      * @param sessionProtocol the {@link SessionProtocol} of the invocation
+     * @param id the {@link RequestId} that contains the identifier of the current {@link Request}
+     *           and {@link Response} pair.
      * @param req the {@link HttpRequest} associated with this context
      * @param rpcReq the {@link RpcRequest} associated with this context
      */
     public DefaultClientRequestContext(
             ClientFactory factory, MeterRegistry meterRegistry, SessionProtocol sessionProtocol,
-            HttpMethod method, String path, @Nullable String query, @Nullable String fragment,
+            RequestId id, HttpMethod method, String path, @Nullable String query, @Nullable String fragment,
             ClientOptions options, @Nullable HttpRequest req, @Nullable RpcRequest rpcReq) {
         this(requireNonNull(factory, "factory"), null, meterRegistry, sessionProtocol,
-             method, path, query, fragment, options, req, rpcReq);
+             id, method, path, query, fragment, options, req, rpcReq);
     }
 
     private DefaultClientRequestContext(
             @Nullable ClientFactory factory, @Nullable EventLoop eventLoop, MeterRegistry meterRegistry,
-            SessionProtocol sessionProtocol, HttpMethod method, String path, @Nullable String query,
-            @Nullable String fragment, ClientOptions options,
+            SessionProtocol sessionProtocol, RequestId id, HttpMethod method, String path,
+            @Nullable String query, @Nullable String fragment, ClientOptions options,
             @Nullable HttpRequest req, @Nullable RpcRequest rpcReq) {
-        super(meterRegistry, sessionProtocol, method, path, query, req, rpcReq);
+        this(factory, eventLoop, meterRegistry, sessionProtocol,
+             id, method, path, query, fragment, options, req, rpcReq, serviceRequestContext());
+    }
+
+    private DefaultClientRequestContext(
+            @Nullable ClientFactory factory, @Nullable EventLoop eventLoop, MeterRegistry meterRegistry,
+            SessionProtocol sessionProtocol, RequestId id, HttpMethod method, String path,
+            @Nullable String query, @Nullable String fragment, ClientOptions options,
+            @Nullable HttpRequest req, @Nullable RpcRequest rpcReq,
+            @Nullable ServiceRequestContext root) {
+        super(meterRegistry, sessionProtocol, id, method, path, query, req, rpcReq,
+              root);
 
         this.factory = factory;
         this.eventLoop = eventLoop;
         this.options = requireNonNull(options, "options");
         this.fragment = fragment;
+        this.root = root;
 
         log = new DefaultRequestLog(this, options.requestContentPreviewerFactory(),
                                     options.responseContentPreviewerFactory());
@@ -144,6 +180,19 @@ public class DefaultClientRequestContext extends NonWrappingRequestContext imple
         responseTimeoutMillis = options.responseTimeoutMillis();
         maxResponseLength = options.maxResponseLength();
         additionalRequestHeaders = options.getOrElse(ClientOption.HTTP_HEADERS, HttpHeaders.of());
+        customizers = copyThreadLocalCustomizers();
+    }
+
+    @Nullable
+    private static ServiceRequestContext serviceRequestContext() {
+        final RequestContext current = RequestContext.currentOrNull();
+        if (current instanceof ServiceRequestContext) {
+            return (ServiceRequestContext) current;
+        }
+        if (current instanceof ClientRequestContext) {
+            return ((ClientRequestContext) current).root();
+        }
+        return null;
     }
 
     /**
@@ -173,12 +222,12 @@ public class DefaultClientRequestContext extends NonWrappingRequestContext imple
                 // Note: thread-local customizer must be run before EndpointSelector.select()
                 //       so that the customizer can inject the attributes which may be required
                 //       by the EndpointSelector.
-                runThreadLocalContextCustomizer();
+                runThreadLocalContextCustomizers();
                 updateEndpoint(endpointSelector.select(this));
             } else {
                 endpointSelector = null;
                 updateEndpoint(endpoint);
-                runThreadLocalContextCustomizer();
+                runThreadLocalContextCustomizers();
             }
 
             if (eventLoop == null) {
@@ -206,10 +255,13 @@ public class DefaultClientRequestContext extends NonWrappingRequestContext imple
         autoFillSchemeAndAuthority();
     }
 
-    private void runThreadLocalContextCustomizer() {
-        final Consumer<ClientRequestContext> customizer = THREAD_LOCAL_CONTEXT_CUSTOMIZER.get();
-        if (customizer != null) {
-            customizer.accept(this);
+    private void runThreadLocalContextCustomizers() {
+        final List<Consumer<? super ClientRequestContext>> customizers = this.customizers;
+        if (customizers != null) {
+            this.customizers = null;
+            for (Consumer<? super ClientRequestContext> c : customizers) {
+                c.accept(this);
+            }
         }
     }
 
@@ -222,7 +274,7 @@ public class DefaultClientRequestContext extends NonWrappingRequestContext imple
         final HttpRequest req = request();
         if (req != null) {
             autoFillSchemeAndAuthority();
-            req.abort();
+            req.abort(cause);
         }
     }
 
@@ -235,12 +287,9 @@ public class DefaultClientRequestContext extends NonWrappingRequestContext imple
         final RequestHeaders headers = req.headers();
         final String authority = endpoint != null ? endpoint.authority() : "UNKNOWN";
         if (headers.scheme() == null || !authority.equals(headers.authority())) {
-            unsafeUpdateRequest(HttpRequest.of(
-                    req,
-                    headers.toBuilder()
-                           .authority(authority)
-                           .scheme(sessionProtocol())
-                           .build()));
+            unsafeUpdateRequest(req.withHeaders(headers.toBuilder()
+                                                       .authority(authority)
+                                                       .scheme(sessionProtocol())));
         }
     }
 
@@ -248,10 +297,12 @@ public class DefaultClientRequestContext extends NonWrappingRequestContext imple
      * Creates a derived context.
      */
     private DefaultClientRequestContext(DefaultClientRequestContext ctx,
+                                        RequestId id,
                                         @Nullable HttpRequest req,
                                         @Nullable RpcRequest rpcReq,
                                         Endpoint endpoint) {
-        super(ctx.meterRegistry(), ctx.sessionProtocol(), ctx.method(), ctx.path(), ctx.query(), req, rpcReq);
+        super(ctx.meterRegistry(), ctx.sessionProtocol(), id, ctx.method(), ctx.path(), ctx.query(),
+              req, rpcReq, ctx.root());
 
         // The new requests cannot be null if it was previously non-null.
         if (ctx.request() != null) {
@@ -266,6 +317,7 @@ public class DefaultClientRequestContext extends NonWrappingRequestContext imple
         endpointSelector = ctx.endpointSelector();
         updateEndpoint(requireNonNull(endpoint, "endpoint"));
         fragment = ctx.fragment();
+        root = ctx.root();
 
         log = new DefaultRequestLog(this, options.requestContentPreviewerFactory(),
                                     options.responseContentPreviewerFactory());
@@ -275,22 +327,39 @@ public class DefaultClientRequestContext extends NonWrappingRequestContext imple
         maxResponseLength = ctx.maxResponseLength();
         additionalRequestHeaders = ctx.additionalRequestHeaders();
 
-        for (final Iterator<Attribute<?>> i = ctx.attrs(); i.hasNext();) {
+        for (final Iterator<Entry<AttributeKey<?>, Object>> i = ctx.ownAttrs(); i.hasNext();) {
             addAttr(i.next());
         }
-        runThreadLocalContextCustomizer();
+    }
+
+    @Nullable
+    private List<Consumer<? super ClientRequestContext>> copyThreadLocalCustomizers() {
+        final ClientThreadLocalState state = ClientThreadLocalState.get();
+        if (state == null) {
+            return null;
+        }
+
+        state.addCapturedContext(this);
+        return state.copyCustomizers();
     }
 
     @SuppressWarnings("unchecked")
-    private <T> void addAttr(Attribute<?> attribute) {
-        final Attribute<T> a = (Attribute<T>) attribute;
-        attr(a.key()).set(a.get());
+    private <T> void addAttr(Entry<AttributeKey<?>, Object> attribute) {
+        setAttr((AttributeKey<T>) attribute.getKey(), (T) attribute.getValue());
+    }
+
+    @Nullable
+    @Override
+    public ServiceRequestContext root() {
+        return root;
     }
 
     @Override
-    public ClientRequestContext newDerivedContext(@Nullable HttpRequest req, @Nullable RpcRequest rpcReq,
+    public ClientRequestContext newDerivedContext(RequestId id,
+                                                  @Nullable HttpRequest req,
+                                                  @Nullable RpcRequest rpcReq,
                                                   Endpoint endpoint) {
-        return new DefaultClientRequestContext(this, req, rpcReq, endpoint);
+        return new DefaultClientRequestContext(this, id, req, rpcReq, endpoint);
     }
 
     @Override
@@ -358,10 +427,8 @@ public class DefaultClientRequestContext extends NonWrappingRequestContext imple
 
     @Override
     public void setWriteTimeoutMillis(long writeTimeoutMillis) {
-        if (writeTimeoutMillis < 0) {
-            throw new IllegalArgumentException(
-                    "writeTimeoutMillis: " + writeTimeoutMillis + " (expected: >= 0)");
-        }
+        checkArgument(writeTimeoutMillis >= 0,
+                      "writeTimeoutMillis: " + writeTimeoutMillis + " (expected: >= 0)");
         this.writeTimeoutMillis = writeTimeoutMillis;
     }
 
@@ -376,17 +443,129 @@ public class DefaultClientRequestContext extends NonWrappingRequestContext imple
     }
 
     @Override
-    public void setResponseTimeoutMillis(long responseTimeoutMillis) {
-        if (responseTimeoutMillis < 0) {
-            throw new IllegalArgumentException(
-                    "responseTimeoutMillis: " + responseTimeoutMillis + " (expected: >= 0)");
+    public void clearResponseTimeout() {
+        if (responseTimeoutMillis == 0) {
+            return;
         }
-        this.responseTimeoutMillis = responseTimeoutMillis;
+
+        final TimeoutController responseTimeoutController = this.responseTimeoutController;
+        responseTimeoutMillis = 0;
+        if (responseTimeoutController != null) {
+            if (eventLoop().inEventLoop()) {
+                responseTimeoutController.cancelTimeout();
+            } else {
+                eventLoop().execute(responseTimeoutController::cancelTimeout);
+            }
+        }
+    }
+
+    @Override
+    public void setResponseTimeoutMillis(long responseTimeoutMillis) {
+        checkArgument(responseTimeoutMillis >= 0,
+                      "responseTimeoutMillis: " + responseTimeoutMillis + " (expected: >= 0)");
+        if (responseTimeoutMillis == 0) {
+            clearResponseTimeout();
+        }
+
+        final long adjustmentMillis =
+                LongMath.saturatedSubtract(responseTimeoutMillis, this.responseTimeoutMillis);
+        extendResponseTimeoutMillis(adjustmentMillis);
     }
 
     @Override
     public void setResponseTimeout(Duration responseTimeout) {
         setResponseTimeoutMillis(requireNonNull(responseTimeout, "responseTimeout").toMillis());
+    }
+
+    @Override
+    public void extendResponseTimeoutMillis(long adjustmentMillis) {
+        if (adjustmentMillis == 0 || responseTimeoutMillis == 0) {
+            return;
+        }
+
+        final long oldResponseTimeoutMillis = responseTimeoutMillis;
+        responseTimeoutMillis = LongMath.saturatedAdd(oldResponseTimeoutMillis, adjustmentMillis);
+        final TimeoutController responseTimeoutController = this.responseTimeoutController;
+        if (responseTimeoutController != null) {
+            if (eventLoop().inEventLoop()) {
+                responseTimeoutController.extendTimeout(adjustmentMillis);
+            } else {
+                eventLoop().execute(() -> responseTimeoutController.extendTimeout(adjustmentMillis));
+            }
+        }
+    }
+
+    @Override
+    public void extendResponseTimeout(Duration adjustment) {
+        extendResponseTimeoutMillis(requireNonNull(adjustment, "adjustment").toMillis());
+    }
+
+    @Override
+    public void setResponseTimeoutAfterMillis(long responseTimeoutMillis) {
+        checkArgument(responseTimeoutMillis > 0,
+                      "responseTimeoutMillis: " + responseTimeoutMillis + " (expected: > 0)");
+
+        long passedTimeMillis = 0;
+        final TimeoutController responseTimeoutController = this.responseTimeoutController;
+        if (responseTimeoutController != null) {
+            passedTimeMillis = TimeUnit.NANOSECONDS.toMillis(
+                    System.nanoTime() - responseTimeoutController.startTimeNanos());
+            if (eventLoop().inEventLoop()) {
+                responseTimeoutController.resetTimeout(responseTimeoutMillis);
+            } else {
+                eventLoop().execute(() -> responseTimeoutController.resetTimeout(responseTimeoutMillis));
+            }
+        }
+
+        this.responseTimeoutMillis = LongMath.saturatedAdd(passedTimeMillis, responseTimeoutMillis);
+    }
+
+    @Override
+    public void setResponseTimeoutAfter(Duration responseTimeout) {
+        setResponseTimeoutAfterMillis(requireNonNull(responseTimeout, "responseTimeout").toMillis());
+    }
+
+    @Override
+    public void setResponseTimeoutAtMillis(long responseTimeoutAtMillis) {
+        checkArgument(responseTimeoutAtMillis >= 0,
+                      "responseTimeoutAtMillis: " + responseTimeoutAtMillis + " (expected: >= 0)");
+        final long nowMillis = Instant.now().toEpochMilli();
+        final long responseTimeoutAfter = responseTimeoutAtMillis - nowMillis;
+        checkArgument(responseTimeoutAfter > 0,
+                      "responseTimeoutAtMillis: %s (expected: > 'now=%s')", responseTimeoutAtMillis, nowMillis);
+
+        setResponseTimeoutAfterMillis(responseTimeoutAfter);
+    }
+
+    @Override
+    public void setResponseTimeoutAt(Instant responseTimeoutAt) {
+        setResponseTimeoutAtMillis(requireNonNull(responseTimeoutAt, "responseTimeoutAt").toEpochMilli());
+    }
+
+    @Override
+    @Nullable
+    public Runnable responseTimeoutHandler() {
+        return responseTimeoutHandler;
+    }
+
+    @Override
+    public void setResponseTimeoutHandler(Runnable responseTimeoutHandler) {
+        this.responseTimeoutHandler = requireNonNull(responseTimeoutHandler, "responseTimeoutHandler");
+    }
+
+    /**
+     * Sets the {@code responseTimeoutController} that is set to a new timeout when
+     * the {@linkplain #responseTimeoutMillis()} response timeout} setting is changed.
+     *
+     * <p>Note: This method is meant for internal use by client-side protocol implementation to reschedule
+     * a timeout task when a user updates the response timeout configuration.
+     */
+    public void setResponseTimeoutController(TimeoutController responseTimeoutController) {
+        requireNonNull(responseTimeoutController, "responseTimeoutController");
+        if (this.responseTimeoutController != null) {
+            throw new IllegalStateException("responseTimeoutController is set already.");
+        }
+        this.responseTimeoutController = responseTimeoutController;
     }
 
     @Override

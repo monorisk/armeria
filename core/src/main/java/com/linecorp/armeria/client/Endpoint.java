@@ -268,7 +268,7 @@ public final class Endpoint implements Comparable<Endpoint>, EndpointGroup {
     }
 
     /**
-     * Returns whether this endpoint has an IP address resolved. This method is a shortcut of
+     * Returns whether this endpoint has an IP address resolved. This method is a shortcut for
      * {@code ipAddr() != null}.
      *
      * @return {@code true} if and only if this endpoint has an IP address.
@@ -672,7 +672,11 @@ public final class Endpoint implements Comparable<Endpoint>, EndpointGroup {
 
     @Override
     public int hashCode() {
-        return (authority().hashCode() * 31 + Objects.hashCode(ipAddr)) * 31 + port;
+        if (isGroup()) {
+            return groupName.hashCode();
+        } else {
+            return (host.hashCode() * 31 + Objects.hashCode(ipAddr)) * 31 + port;
+        }
     }
 
     @Override

@@ -20,12 +20,11 @@ import static org.assertj.core.api.Assertions.assertThat;
 import org.junit.jupiter.api.Test;
 
 import com.linecorp.armeria.client.Client;
-import com.linecorp.armeria.client.ClientBuilder;
 import com.linecorp.armeria.client.Clients;
-import com.linecorp.armeria.client.encoding.HttpDecodingClient;
+import com.linecorp.armeria.client.encoding.DecodingClient;
 import com.linecorp.armeria.client.logging.LoggingClient;
 import com.linecorp.armeria.client.retry.RetryStrategy;
-import com.linecorp.armeria.client.retry.RetryingHttpClient;
+import com.linecorp.armeria.client.retry.RetryingClient;
 import com.linecorp.armeria.common.util.Unwrappable;
 import com.linecorp.armeria.grpc.testing.TestServiceGrpc.TestServiceBlockingStub;
 
@@ -33,24 +32,25 @@ class GrpcClientUnwrapTest {
 
     @Test
     void test() {
-        final TestServiceBlockingStub client = new ClientBuilder("gproto+http://127.0.0.1:1/")
-                .decorator(LoggingClient.newDecorator())
-                .decorator(RetryingHttpClient.newDecorator(RetryStrategy.never()))
-                .build(TestServiceBlockingStub.class);
+        final TestServiceBlockingStub client =
+                Clients.builder("gproto+http://127.0.0.1:1/")
+                       .decorator(LoggingClient.newDecorator())
+                       .decorator(RetryingClient.newDecorator(RetryStrategy.never()))
+                       .build(TestServiceBlockingStub.class);
 
         assertThat(Clients.unwrap(client, TestServiceBlockingStub.class)).containsSame(client);
 
-        assertThat(Clients.unwrap(client, RetryingHttpClient.class))
-                .containsInstanceOf(RetryingHttpClient.class);
+        assertThat(Clients.unwrap(client, RetryingClient.class))
+                .containsInstanceOf(RetryingClient.class);
         assertThat(Clients.unwrap(client, LoggingClient.class)).containsInstanceOf(LoggingClient.class);
 
         // The outermost decorator of the client must be returned,
         // because the search begins from outside to inside.
         // In the current setup, the outermost `Unwrappable` and `Client` are
-        // `ArmeriaChannel` and `RetryingHttpClient` respectively.
+        // `ArmeriaChannel` and `RetryingClient` respectively.
         assertThat(Clients.unwrap(client, Unwrappable.class)).containsInstanceOf(ArmeriaChannel.class);
-        assertThat(Clients.unwrap(client, Client.class)).containsInstanceOf(RetryingHttpClient.class);
+        assertThat(Clients.unwrap(client, Client.class)).containsInstanceOf(RetryingClient.class);
 
-        assertThat(Clients.unwrap(client, HttpDecodingClient.class)).isEmpty();
+        assertThat(Clients.unwrap(client, DecodingClient.class)).isEmpty();
     }
 }

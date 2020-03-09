@@ -16,6 +16,7 @@
 
 package com.linecorp.armeria.server;
 
+import static com.google.common.collect.ImmutableSet.toImmutableSet;
 import static java.util.Objects.requireNonNull;
 
 import java.net.InetAddress;
@@ -30,7 +31,6 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -43,12 +43,14 @@ import java.util.stream.Collectors;
 
 import javax.annotation.Nullable;
 
+import org.jctools.maps.NonBlockingHashSet;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Joiner;
 import com.google.common.base.MoreObjects;
+import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.ImmutableSet.Builder;
 import com.google.common.collect.Iterables;
@@ -58,13 +60,16 @@ import com.linecorp.armeria.common.SessionProtocol;
 import com.linecorp.armeria.common.metric.MeterIdPrefix;
 import com.linecorp.armeria.common.util.EventLoopGroups;
 import com.linecorp.armeria.common.util.StartStopSupport;
+import com.linecorp.armeria.common.util.Version;
 import com.linecorp.armeria.internal.ChannelUtil;
 import com.linecorp.armeria.internal.ConnectionLimitingHandler;
 import com.linecorp.armeria.internal.PathAndQuery;
 import com.linecorp.armeria.internal.TransportType;
 import com.linecorp.armeria.server.logging.AccessLogWriter;
 
+import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.Tag;
 import io.netty.bootstrap.ServerBootstrap;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelFuture;
@@ -72,6 +77,7 @@ import io.netty.channel.ChannelFutureListener;
 import io.netty.channel.ChannelOption;
 import io.netty.channel.EventLoop;
 import io.netty.channel.EventLoopGroup;
+import io.netty.channel.ServerChannel;
 import io.netty.handler.ssl.SslContext;
 import io.netty.util.DomainNameMapping;
 import io.netty.util.concurrent.FastThreadLocalThread;
@@ -99,12 +105,13 @@ public final class Server implements AutoCloseable {
     private final DomainNameMapping<SslContext> sslContexts;
 
     private final StartStopSupport<Void, Void, Void, ServerListener> startStop;
-    private final Set<Channel> serverChannels = Collections.newSetFromMap(new ConcurrentHashMap<>());
+    private final Set<ServerChannel> serverChannels = new NonBlockingHashSet<>();
     private final Map<InetSocketAddress, ServerPort> activePorts = new LinkedHashMap<>();
     private final ConnectionLimitingHandler connectionLimitingHandler;
 
     @Nullable
-    private ServerBootstrap serverBootstrap;
+    @VisibleForTesting
+    ServerBootstrap serverBootstrap;
 
     Server(ServerConfig config, @Nullable DomainNameMapping<SslContext> sslContexts) {
         this.config = requireNonNull(config, "config");
@@ -117,6 +124,8 @@ public final class Server implements AutoCloseable {
         // Server-wide cache metrics.
         final MeterIdPrefix idPrefix = new MeterIdPrefix("armeria.server.parsedPathCache");
         PathAndQuery.registerMetrics(config.meterRegistry(), idPrefix);
+
+        setupVersionMetrics();
 
         // Invoke the serviceAdded() method in Service so that it can keep the reference to this Server or
         // add a listener to it.
@@ -202,12 +211,6 @@ public final class Server implements AutoCloseable {
                               .localAddress()
                               .getPort();
         }
-    }
-
-    @Nullable
-    @VisibleForTesting
-    ServerBootstrap serverBootstrap() {
-        return serverBootstrap;
     }
 
     /**
@@ -305,6 +308,27 @@ public final class Server implements AutoCloseable {
         return connectionLimitingHandler.numConnections();
     }
 
+    /**
+     * Sets up the version metrics.
+     */
+    @VisibleForTesting
+    void setupVersionMetrics() {
+        final MeterRegistry meterRegistry = config().meterRegistry();
+        final Map<String, Version> map = Version.identify(getClass().getClassLoader());
+        final Version versionInfo = map.get("armeria");
+        final String version = versionInfo.artifactVersion();
+        final String commit = versionInfo.longCommitHash();
+        final String repositoryStatus = versionInfo.repositoryStatus();
+        final List<Tag> tags = ImmutableList.of(Tag.of("version", version),
+                                                Tag.of("commit", commit),
+                                                Tag.of("repoStatus", repositoryStatus));
+        Gauge.builder("armeria.build.info", () -> 1)
+             .tags(tags)
+             .description("A metric with a constant '1' value labeled by version and commit hash" +
+                          " from which Armeria was built.")
+             .register(meterRegistry);
+    }
+
     @Override
     public String toString() {
         return MoreObjects.toStringHelper(this)
@@ -378,11 +402,13 @@ public final class Server implements AutoCloseable {
                 b.childOption(castOption, v);
             });
 
-            b.group(EventLoopGroups.newEventLoopGroup(1, r -> {
+            final EventLoopGroup bossGroup = EventLoopGroups.newEventLoopGroup(1, r -> {
                 final FastThreadLocalThread thread = new FastThreadLocalThread(r, bossThreadName(port));
                 thread.setDaemon(false);
                 return thread;
-            }), config.workerGroup());
+            });
+
+            b.group(bossGroup, config.workerGroup());
             b.channel(TransportType.detectTransportType().serverChannelType());
             b.handler(connectionLimitingHandler);
             b.childHandler(new HttpServerPipelineConfigurator(config, port, sslContexts,
@@ -475,16 +501,21 @@ public final class Server implements AutoCloseable {
                     }
 
                     workerShutdownFuture.addListener(unused5 -> {
-                        // If starts to shutdown before initializing serverChannels, completes the future
-                        // immediately.
-                        if (serverChannels.isEmpty()) {
+                        final Set<EventLoopGroup> bossGroups =
+                                Server.this.serverChannels.stream()
+                                                          .map(ch -> ch.eventLoop().parent())
+                                                          .collect(toImmutableSet());
+
+                        // If started to shutdown before initializing a boss group,
+                        // complete the future immediately.
+                        if (bossGroups.isEmpty()) {
                             finishDoStop(future);
                             return;
                         }
+
                         // Shut down all boss groups and wait until they are terminated.
-                        final AtomicInteger remainingBossGroups = new AtomicInteger(serverChannels.size());
-                        serverChannels.forEach(ch -> {
-                            final EventLoopGroup bossGroup = ch.eventLoop().parent();
+                        final AtomicInteger remainingBossGroups = new AtomicInteger(bossGroups.size());
+                        bossGroups.forEach(bossGroup -> {
                             bossGroup.shutdownGracefully();
                             bossGroup.terminationFuture().addListener(unused6 -> {
                                 if (remainingBossGroups.decrementAndGet() != 0) {
@@ -506,11 +537,14 @@ public final class Server implements AutoCloseable {
         }
 
         private void finishDoStop(CompletableFuture<Void> future) {
+            serverChannels.clear();
+
             if (config.shutdownBlockingTaskExecutorOnStop()) {
-                final ExecutorService executor;
-                final ExecutorService blockingTaskExecutor = config.blockingTaskExecutor();
-                if (blockingTaskExecutor instanceof InterminableExecutorService) {
-                    executor = ((InterminableExecutorService) blockingTaskExecutor).getExecutorService();
+                final ScheduledExecutorService executor;
+                final ScheduledExecutorService blockingTaskExecutor = config.blockingTaskExecutor();
+                if (blockingTaskExecutor instanceof UnstoppableScheduledExecutorService) {
+                    executor =
+                            ((UnstoppableScheduledExecutorService) blockingTaskExecutor).getExecutorService();
                 } else {
                     executor = blockingTaskExecutor;
                 }
@@ -529,15 +563,7 @@ public final class Server implements AutoCloseable {
                 }
             }
 
-            if (!config.shutdownAccessLogWriterOnStop()) {
-                future.complete(null);
-                return;
-            }
-
             final Builder<AccessLogWriter> builder = ImmutableSet.builder();
-            if (config.shutdownAccessLogWriterOnStop()) {
-                builder.add(config.accessLogWriter());
-            }
             config.virtualHosts()
                   .stream()
                   .filter(VirtualHost::shutdownAccessLogWriterOnStop)
@@ -613,14 +639,11 @@ public final class Server implements AutoCloseable {
 
         @Override
         public void operationComplete(ChannelFuture f) {
-            final Channel ch = f.channel();
+            final ServerChannel ch = (ServerChannel) f.channel();
             assert ch.eventLoop().inEventLoop();
+            serverChannels.add(ch);
 
             if (f.isSuccess()) {
-                serverChannels.add(ch);
-                ch.closeFuture()
-                  .addListener((ChannelFutureListener) future -> serverChannels.remove(future.channel()));
-
                 final InetSocketAddress localAddress = (InetSocketAddress) ch.localAddress();
                 final ServerPort actualPort = new ServerPort(localAddress, port.protocols());
 

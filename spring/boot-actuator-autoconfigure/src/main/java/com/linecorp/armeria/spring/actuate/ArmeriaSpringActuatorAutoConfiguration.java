@@ -60,7 +60,10 @@ import com.linecorp.armeria.common.HttpMethod;
 import com.linecorp.armeria.common.HttpResponse;
 import com.linecorp.armeria.common.HttpStatus;
 import com.linecorp.armeria.common.MediaType;
+import com.linecorp.armeria.server.HttpService;
 import com.linecorp.armeria.server.Route;
+import com.linecorp.armeria.server.cors.CorsService;
+import com.linecorp.armeria.server.cors.CorsServiceBuilder;
 import com.linecorp.armeria.spring.ArmeriaServerConfigurator;
 
 /**
@@ -69,14 +72,14 @@ import com.linecorp.armeria.spring.ArmeriaServerConfigurator;
  */
 @Configuration
 @AutoConfigureAfter(EndpointAutoConfiguration.class)
-@EnableConfigurationProperties(WebEndpointProperties.class)
+@EnableConfigurationProperties({ WebEndpointProperties.class, CorsEndpointProperties.class })
 public class ArmeriaSpringActuatorAutoConfiguration {
 
     @VisibleForTesting
-    static final MediaType ACTUATOR_MEDIA_TYPE = MediaType.parse(ActuatorMediaType.V2_JSON);
+    static final MediaType ACTUATOR_MEDIA_TYPE = MediaType.parse(ActuatorMediaType.V3_JSON);
 
     private static final List<String> MEDIA_TYPES =
-            ImmutableList.of(ActuatorMediaType.V2_JSON, "application/json");
+            ImmutableList.of(ActuatorMediaType.V3_JSON, "application/json");
 
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
 
@@ -114,21 +117,59 @@ public class ArmeriaSpringActuatorAutoConfiguration {
             WebEndpointsSupplier endpointsSupplier,
             EndpointMediaTypes mediaTypes,
             WebEndpointProperties properties,
-            HealthStatusHttpMapper healthMapper) {
+            HealthStatusHttpMapper healthMapper,
+            CorsEndpointProperties corsProperties) {
         final EndpointMapping endpointMapping = new EndpointMapping(properties.getBasePath());
 
         final Collection<ExposableWebEndpoint> endpoints = endpointsSupplier.getEndpoints();
         return sb -> {
+            final CorsServiceBuilder cors;
+            if (!corsProperties.getAllowedOrigins().isEmpty()) {
+                cors = CorsService.builder(corsProperties.getAllowedOrigins());
+
+                if (!corsProperties.getAllowedMethods().contains("*")) {
+                    if (corsProperties.getAllowedMethods().isEmpty()) {
+                        cors.allowRequestMethods(HttpMethod.GET);
+                    } else {
+                        cors.allowRequestMethods(
+                                corsProperties.getAllowedMethods().stream().map(HttpMethod::valueOf)
+                                        ::iterator);
+                    }
+                }
+
+                if (!corsProperties.getAllowedHeaders().isEmpty() &&
+                    !corsProperties.getAllowedHeaders().contains("*")) {
+                    cors.allowRequestHeaders(corsProperties.getAllowedHeaders());
+                }
+
+                if (!corsProperties.getExposedHeaders().isEmpty()) {
+                    cors.exposeHeaders(corsProperties.getExposedHeaders());
+                }
+
+                if (Boolean.TRUE.equals(corsProperties.getAllowCredentials())) {
+                    cors.allowCredentials();
+                }
+
+                cors.maxAge(corsProperties.getMaxAge());
+            } else {
+                cors = null;
+            }
+
             endpoints.stream()
                      .flatMap(endpoint -> endpoint.getOperations().stream())
                      .forEach(operation -> {
                          final WebOperationRequestPredicate predicate = operation.getRequestPredicate();
-                         sb.service(route(predicate.getHttpMethod().name(),
-                                          endpointMapping.createSubPath(predicate.getPath()),
-                                          predicate.getConsumes(),
-                                          predicate.getProduces()),
-                                    new WebOperationHttpService(operation, healthMapper));
+                         final String path = endpointMapping.createSubPath(predicate.getPath());
+                         final Route route = route(predicate.getHttpMethod().name(),
+                                                   path,
+                                                   predicate.getConsumes(),
+                                                   predicate.getProduces());
+                         sb.service(route, new WebOperationService(operation, healthMapper));
+                         if (cors != null) {
+                             cors.route(path);
+                         }
                      });
+
             if (StringUtils.hasText(endpointMapping.getPath())) {
                 final Route route = route(
                         HttpMethod.GET.name(),
@@ -136,7 +177,7 @@ public class ArmeriaSpringActuatorAutoConfiguration {
                         ImmutableList.of(),
                         mediaTypes.getProduced()
                 );
-                sb.service(route, (ctx, req) -> {
+                final HttpService linksService = (ctx, req) -> {
                     final Map<String, Link> links =
                             new EndpointLinksResolver(endpoints).resolveLinks(req.path());
                     return HttpResponse.of(
@@ -144,7 +185,14 @@ public class ArmeriaSpringActuatorAutoConfiguration {
                             ACTUATOR_MEDIA_TYPE,
                             OBJECT_MAPPER.writeValueAsBytes(ImmutableMap.of("_links", links))
                     );
-                });
+                };
+                sb.service(route, linksService);
+                if (cors != null) {
+                    cors.route(endpointMapping.getPath());
+                }
+            }
+            if (cors != null) {
+                sb.routeDecorator().pathPrefix("/").build(cors.newDecorator());
             }
         };
     }

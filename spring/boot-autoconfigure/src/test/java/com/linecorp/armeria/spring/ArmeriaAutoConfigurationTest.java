@@ -41,9 +41,8 @@ import org.springframework.test.context.junit4.SpringRunner;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.google.common.collect.ImmutableList;
 
-import com.linecorp.armeria.client.ClientBuilder;
 import com.linecorp.armeria.client.Clients;
-import com.linecorp.armeria.client.HttpClient;
+import com.linecorp.armeria.client.WebClient;
 import com.linecorp.armeria.common.AggregatedHttpResponse;
 import com.linecorp.armeria.common.HttpHeaderNames;
 import com.linecorp.armeria.common.HttpHeaders;
@@ -207,7 +206,7 @@ public class ArmeriaAutoConfigurationTest {
 
     @Test
     public void testHttpServiceRegistrationBean() throws Exception {
-        final HttpClient client = HttpClient.of(newUrl("h1c"));
+        final WebClient client = WebClient.of(newUrl("h1c"));
 
         final HttpResponse response = client.get("/ok");
 
@@ -218,7 +217,7 @@ public class ArmeriaAutoConfigurationTest {
 
     @Test
     public void testAnnotatedServiceRegistrationBean() throws Exception {
-        final HttpClient client = HttpClient.of(newUrl("h1c"));
+        final WebClient client = WebClient.of(newUrl("h1c"));
 
         HttpResponse response = client.get("/annotated/get");
 
@@ -238,8 +237,8 @@ public class ArmeriaAutoConfigurationTest {
         assertThat(res.status()).isEqualTo(HttpStatus.OK);
         assertThatJson(res.contentUtf8()).node("foo").isEqualTo("bar");
 
-        final HttpClient httpClient = HttpClient.of(newUrl("h1c"));
-        response = httpClient.get("/internal/docs/specification.json");
+        final WebClient webClient = WebClient.of(newUrl("h1c"));
+        response = webClient.get("/internal/docs/specification.json");
 
         res = response.aggregate().get();
         assertThat(res.status()).isEqualTo(HttpStatus.OK);
@@ -258,11 +257,10 @@ public class ArmeriaAutoConfigurationTest {
     public void testThriftServiceRegistrationBean() throws Exception {
         final HelloService.Iface client = Clients.newClient(newUrl("tbinary+h1c") + "/thrift",
                                                             HelloService.Iface.class);
-
         assertThat(client.hello("world")).isEqualTo("hello world");
 
-        final HttpClient httpClient = HttpClient.of(newUrl("h1c"));
-        final HttpResponse response = httpClient.get("/internal/docs/specification.json");
+        final WebClient webClient = WebClient.of(newUrl("h1c"));
+        final HttpResponse response = webClient.get("/internal/docs/specification.json");
 
         final AggregatedHttpResponse res = response.aggregate().get();
         assertThat(res.status()).isEqualTo(HttpStatus.OK);
@@ -277,15 +275,15 @@ public class ArmeriaAutoConfigurationTest {
 
     @Test
     public void testGrpcServiceRegistrationBean() throws Exception {
-        final HelloServiceBlockingStub client = new ClientBuilder(newUrl("gproto+h2c") + '/')
-                .build(HelloServiceBlockingStub.class);
+        final HelloServiceBlockingStub client = Clients.newClient(newUrl("gproto+h2c") + '/',
+                                                                  HelloServiceBlockingStub.class);
         final HelloRequest request = HelloRequest.newBuilder()
                                                  .setName("world")
                                                  .build();
         assertThat(client.hello(request).getMessage()).isEqualTo("Hello, world");
 
-        final HttpClient httpClient = HttpClient.of(newUrl("h1c"));
-        final HttpResponse response = httpClient.get("/internal/docs/specification.json");
+        final WebClient webClient = WebClient.of(newUrl("h1c"));
+        final HttpResponse response = webClient.get("/internal/docs/specification.json");
 
         final AggregatedHttpResponse res = response.aggregate().get();
         assertThat(res.status()).isEqualTo(HttpStatus.OK);
@@ -308,10 +306,10 @@ public class ArmeriaAutoConfigurationTest {
 
     @Test
     public void testMetrics() throws Exception {
-        final String metricReport = HttpClient.of(newUrl("http"))
-                                              .get("/internal/metrics")
-                                              .aggregate().join()
-                                              .contentUtf8();
+        final String metricReport = WebClient.of(newUrl("http"))
+                                             .get("/internal/metrics")
+                                             .aggregate().join()
+                                             .contentUtf8();
         assertThat(metricReport).contains("# TYPE jvm_gc_live_data_size_bytes gauge");
     }
 }

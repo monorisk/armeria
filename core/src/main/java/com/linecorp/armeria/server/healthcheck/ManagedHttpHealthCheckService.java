@@ -31,7 +31,7 @@ import com.linecorp.armeria.common.MediaType;
 import com.linecorp.armeria.server.ServiceRequestContext;
 
 /**
- * A {@link HttpHealthCheckService} which allows overriding its status via a PUT request.
+ * An {@link HttpHealthCheckService} which allows overriding its status via a PUT request.
  *
  * <h2>Example</h2>
  * <pre>{@code
@@ -67,7 +67,7 @@ public class ManagedHttpHealthCheckService extends HttpHealthCheckService {
     @Override
     protected HttpResponse doPut(ServiceRequestContext ctx, HttpRequest req) throws Exception {
         return HttpResponse.from(
-                updateHealthStatus(ctx, req).thenApply(HttpResponse::of)
+                updateHealthStatus(ctx, req).thenApply(AggregatedHttpResponse::toHttpResponse)
                                             .exceptionally(HttpResponse::ofFailure));
     }
 

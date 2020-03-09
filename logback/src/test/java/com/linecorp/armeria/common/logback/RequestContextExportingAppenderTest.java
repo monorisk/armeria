@@ -43,10 +43,7 @@ import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
 
 import com.linecorp.armeria.client.ClientRequestContext;
-import com.linecorp.armeria.client.ClientRequestContextBuilder;
 import com.linecorp.armeria.client.Endpoint;
-import com.linecorp.armeria.common.DefaultRpcRequest;
-import com.linecorp.armeria.common.DefaultRpcResponse;
 import com.linecorp.armeria.common.HttpHeaderNames;
 import com.linecorp.armeria.common.HttpMethod;
 import com.linecorp.armeria.common.HttpRequest;
@@ -57,13 +54,14 @@ import com.linecorp.armeria.common.RpcRequest;
 import com.linecorp.armeria.common.RpcResponse;
 import com.linecorp.armeria.common.logback.HelloService.hello_args;
 import com.linecorp.armeria.common.logback.HelloService.hello_result;
+import com.linecorp.armeria.common.logging.BuiltInProperty;
 import com.linecorp.armeria.common.logging.RequestLogBuilder;
 import com.linecorp.armeria.common.thrift.ThriftCall;
 import com.linecorp.armeria.common.thrift.ThriftReply;
 import com.linecorp.armeria.common.thrift.ThriftSerializationFormats;
 import com.linecorp.armeria.common.util.SafeCloseable;
+import com.linecorp.armeria.server.ProxiedAddresses;
 import com.linecorp.armeria.server.ServiceRequestContext;
-import com.linecorp.armeria.server.ServiceRequestContextBuilder;
 
 import ch.qos.logback.classic.Level;
 import ch.qos.logback.classic.Logger;
@@ -81,8 +79,8 @@ public class RequestContextExportingAppenderTest {
     private static final AttributeKey<CustomValue> MY_ATTR =
             AttributeKey.valueOf(RequestContextExportingAppenderTest.class, "MY_ATTR");
 
-    private static final RpcRequest RPC_REQ = new DefaultRpcRequest(Object.class, "hello", "world");
-    private static final RpcResponse RPC_RES = new DefaultRpcResponse("Hello, world!");
+    private static final RpcRequest RPC_REQ = RpcRequest.of(Object.class, "hello", "world");
+    private static final RpcResponse RPC_RES = RpcResponse.of("Hello, world!");
     private static final ThriftCall THRIFT_CALL =
             new ThriftCall(new TMessage("hello", TMessageType.CALL, 1),
                            new hello_args("world"));
@@ -403,14 +401,15 @@ public class RequestContextExportingAppenderTest {
                                                                  HttpHeaderNames.USER_AGENT, "some-client"));
 
         final ServiceRequestContext ctx =
-                ServiceRequestContextBuilder.of(req)
-                                            .sslSession(newSslSession())
-                                            .remoteAddress(remoteAddress)
-                                            .localAddress(localAddress)
-                                            .clientAddress(InetAddress.getByName("9.10.11.12"))
-                                            .build();
+                ServiceRequestContext.builder(req)
+                                     .sslSession(newSslSession())
+                                     .remoteAddress(remoteAddress)
+                                     .localAddress(localAddress)
+                                     .proxiedAddresses(
+                                             ProxiedAddresses.of(new InetSocketAddress("9.10.11.12", 0)))
+                                     .build();
 
-        ctx.attr(MY_ATTR).set(new CustomValue("some-attr"));
+        ctx.setAttr(MY_ATTR, new CustomValue("some-attr"));
         return ctx;
     }
 
@@ -520,14 +519,14 @@ public class RequestContextExportingAppenderTest {
                                                                  HttpHeaderNames.USER_AGENT, "some-client"));
 
         final ClientRequestContext ctx =
-                ClientRequestContextBuilder.of(req)
-                                           .remoteAddress(remoteAddress)
-                                           .localAddress(localAddress)
-                                           .endpoint(Endpoint.of("server.com", 8080))
-                                           .sslSession(newSslSession())
-                                           .build();
+                ClientRequestContext.builder(req)
+                                    .remoteAddress(remoteAddress)
+                                    .localAddress(localAddress)
+                                    .endpoint(Endpoint.of("server.com", 8080))
+                                    .sslSession(newSslSession())
+                                    .build();
 
-        ctx.attr(MY_ATTR).set(new CustomValue("some-attr"));
+        ctx.setAttr(MY_ATTR, new CustomValue("some-attr"));
         return ctx;
     }
 

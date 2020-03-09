@@ -18,6 +18,7 @@ package com.linecorp.armeria.server.healthcheck;
 import static com.linecorp.armeria.testing.internal.TestUtil.withTimeout;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.awaitility.Awaitility.await;
 
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -35,7 +36,7 @@ import org.junit.jupiter.api.extension.RegisterExtension;
 
 import com.google.common.io.ByteStreams;
 
-import com.linecorp.armeria.client.HttpClient;
+import com.linecorp.armeria.client.WebClient;
 import com.linecorp.armeria.common.AggregatedHttpResponse;
 import com.linecorp.armeria.common.HttpData;
 import com.linecorp.armeria.common.HttpHeaderNames;
@@ -95,6 +96,8 @@ class HealthCheckServiceTest {
                                          })
                                          .build());
             sb.gracefulShutdownTimeout(Duration.ofSeconds(10), Duration.ofSeconds(10));
+            sb.disableServerHeader();
+            sb.disableDateHeader();
         }
     };
 
@@ -107,12 +110,14 @@ class HealthCheckServiceTest {
     void ensureNoPendingResponses() {
         server.server().serviceConfigs().forEach(cfg -> {
             cfg.service().as(HealthCheckService.class).ifPresent(service -> {
-                if (service.pendingHealthyResponses != null) {
-                    assertThat(service.pendingHealthyResponses).isEmpty();
-                }
-                if (service.pendingUnhealthyResponses != null) {
-                    assertThat(service.pendingUnhealthyResponses).isEmpty();
-                }
+                await().untilAsserted(() -> {
+                    if (service.pendingHealthyResponses != null) {
+                        assertThat(service.pendingHealthyResponses).isEmpty();
+                    }
+                    if (service.pendingUnhealthyResponses != null) {
+                        assertThat(service.pendingUnhealthyResponses).isEmpty();
+                    }
+                });
             });
         });
     }
@@ -252,7 +257,7 @@ class HealthCheckServiceTest {
     @Test
     void waitWithWrongMethod() throws Exception {
         withTimeout(() -> {
-            final HttpClient client = HttpClient.of(server.httpUri("/"));
+            final WebClient client = WebClient.of(server.httpUri("/"));
             final CompletableFuture<AggregatedHttpResponse> f = client.execute(
                     RequestHeaders.of(HttpMethod.POST, "/hc_custom",
                                       HttpHeaderNames.PREFER, "wait=60",
@@ -280,7 +285,7 @@ class HealthCheckServiceTest {
 
     @Test
     void longPollingDisabled() throws Exception {
-        final HttpClient client = HttpClient.of(server.httpUri("/"));
+        final WebClient client = WebClient.of(server.httpUri("/"));
         final CompletableFuture<AggregatedHttpResponse> f = client.execute(
                 RequestHeaders.of(HttpMethod.GET, "/hc_long_polling_disabled",
                                   HttpHeaderNames.PREFER, "wait=60",
@@ -294,7 +299,7 @@ class HealthCheckServiceTest {
 
     @Test
     void notUpdatableByDefault() throws Exception {
-        final HttpClient client = HttpClient.of(server.httpUri("/"));
+        final WebClient client = WebClient.of(server.httpUri("/"));
         final AggregatedHttpResponse res = client.execute(RequestHeaders.of(HttpMethod.POST, "/hc"),
                                                           "{\"healthy\":false}").aggregate().join();
         assertThat(res.status()).isEqualTo(HttpStatus.METHOD_NOT_ALLOWED);
@@ -302,7 +307,7 @@ class HealthCheckServiceTest {
 
     @Test
     void updateUsingPutOrPost() {
-        final HttpClient client = HttpClient.of(server.httpUri("/"));
+        final WebClient client = WebClient.of(server.httpUri("/"));
 
         // Make unhealthy.
         final AggregatedHttpResponse res1 = client.execute(RequestHeaders.of(HttpMethod.PUT, "/hc_updatable"),
@@ -325,7 +330,7 @@ class HealthCheckServiceTest {
 
     @Test
     void updateUsingPatch() {
-        final HttpClient client = HttpClient.of(server.httpUri("/"));
+        final WebClient client = WebClient.of(server.httpUri("/"));
 
         // Make unhealthy.
         final AggregatedHttpResponse res1 = client.execute(
@@ -350,7 +355,7 @@ class HealthCheckServiceTest {
 
     @Test
     void custom() {
-        final HttpClient client = HttpClient.of(server.httpUri("/"));
+        final WebClient client = WebClient.of(server.httpUri("/"));
 
         // Make unhealthy.
         final AggregatedHttpResponse res1 = client.execute(RequestHeaders.of(HttpMethod.PUT, "/hc_custom"),
@@ -382,7 +387,7 @@ class HealthCheckServiceTest {
 
     @Test
     void customError() {
-        final HttpClient client = HttpClient.of(server.httpUri("/"));
+        final WebClient client = WebClient.of(server.httpUri("/"));
 
         // Use an unsupported method.
         final AggregatedHttpResponse res1 = client.execute(RequestHeaders.of(HttpMethod.PATCH, "/hc_custom"))
@@ -401,7 +406,7 @@ class HealthCheckServiceTest {
 
     private static CompletableFuture<AggregatedHttpResponse> sendLongPollingGet(String healthiness,
                                                                                 int timeoutSeconds) {
-        final HttpClient client = HttpClient.of(server.httpUri("/"));
+        final WebClient client = WebClient.of(server.httpUri("/"));
         return client.execute(RequestHeaders.of(HttpMethod.GET, "/hc",
                                                 HttpHeaderNames.PREFER, "wait=" + timeoutSeconds,
                                                 HttpHeaderNames.IF_NONE_MATCH,

@@ -22,6 +22,7 @@ import java.util.Set;
 
 import javax.annotation.Nullable;
 
+import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Ascii;
 import com.google.common.base.MoreObjects;
 import com.google.common.base.Strings;
@@ -42,32 +43,38 @@ public final class OAuth1aToken {
     /**
      * oauth_consumer_key parameter.
      */
-    private static final String OAUTH_CONSUMER_KEY = "oauth_consumer_key";
+    @VisibleForTesting
+    static final String OAUTH_CONSUMER_KEY = "oauth_consumer_key";
 
     /**
      * oauth_token parameter.
      */
-    private static final String OAUTH_TOKEN = "oauth_token";
+    @VisibleForTesting
+    static final String OAUTH_TOKEN = "oauth_token";
 
     /**
      * oauth_signature_method parameter.
      */
-    private static final String OAUTH_SIGNATURE_METHOD = "oauth_signature_method";
+    @VisibleForTesting
+    static final String OAUTH_SIGNATURE_METHOD = "oauth_signature_method";
 
     /**
      * oauth_signature parameter.
      */
-    private static final String OAUTH_SIGNATURE = "oauth_signature";
+    @VisibleForTesting
+    static final String OAUTH_SIGNATURE = "oauth_signature";
 
     /**
      * oauth_timestamp parameter.
      */
-    private static final String OAUTH_TIMESTAMP = "oauth_timestamp";
+    @VisibleForTesting
+    static final String OAUTH_TIMESTAMP = "oauth_timestamp";
 
     /**
      * oauth_nonce parameter.
      */
-    private static final String OAUTH_NONCE = "oauth_nonce";
+    @VisibleForTesting
+    static final String OAUTH_NONCE = "oauth_nonce";
 
     /**
      * version parameter. (optional)
@@ -127,7 +134,7 @@ public final class OAuth1aToken {
 
         if (!this.params.keySet().containsAll(REQUIRED_PARAM_KEYS)) {
             final Set<String> missing = Sets.difference(REQUIRED_PARAM_KEYS, this.params.keySet());
-            throw new IllegalArgumentException("Missing OAuth1a parameter exists: " + missing);
+            throw new IllegalArgumentException("Missing OAuth1a parameters: " + missing);
         }
 
         try {
@@ -138,43 +145,65 @@ public final class OAuth1aToken {
         }
     }
 
+    /**
+     * Returns the value of the {@value #REALM} property.
+     */
     public String realm() {
         return params.get(REALM);
     }
 
+    /**
+     * Returns the value of the {@value #OAUTH_CONSUMER_KEY} property.
+     */
     public String consumerKey() {
         return params.get(OAUTH_CONSUMER_KEY);
     }
 
+    /**
+     * Returns the value of the {@value #OAUTH_TOKEN} property.
+     */
     public String token() {
         return params.get(OAUTH_TOKEN);
     }
 
+    /**
+     * Returns the value of {@value #OAUTH_SIGNATURE_METHOD} property.
+     */
     public String signatureMethod() {
         return params.get(OAUTH_SIGNATURE_METHOD);
     }
 
+    /**
+     * Returns the value of {@value #OAUTH_SIGNATURE} property.
+     */
     public String signature() {
         return params.get(OAUTH_SIGNATURE);
     }
 
+    /**
+     * Returns the value of {@value #OAUTH_TIMESTAMP} property.
+     */
     public String timestamp() {
         return params.get(OAUTH_TIMESTAMP);
     }
 
+    /**
+     * Returns the value of {@value #OAUTH_NONCE} property.
+     */
     public String nonce() {
         return params.get(OAUTH_NONCE);
     }
 
     /**
-     * Returns version. If not set, returns default value (1.0).
+     * Returns the value of {@value #OAUTH_VERSION} property.
+     * If not set, returns the default value of {@code "1.0"}.
      */
     public String version() {
         return params.getOrDefault(OAUTH_VERSION, "1.0");
     }
 
     /**
-     * Returns additional (or, user-defined) parameters.
+     * Returns additional (or user-defined) parameters.
      */
     public Map<String, String> additionals() {
         final ImmutableMap.Builder<String, String> builder = ImmutableMap.builder();
@@ -195,7 +224,14 @@ public final class OAuth1aToken {
             return false;
         }
         final OAuth1aToken that = (OAuth1aToken) o;
-        return params.equals(that.params);
+
+        // Do not short-circuit to make it hard to guess anything from timing.
+        boolean equals = true;
+        for (Entry<String, String> e : params.entrySet()) {
+            equals &= BasicToken.secureEquals(that.params.get(e.getKey()), e.getValue());
+        }
+
+        return equals && params.size() == that.params.size();
     }
 
     @Override

@@ -48,8 +48,7 @@ import org.springframework.web.reactive.function.server.ServerRequest;
 import org.springframework.web.reactive.function.server.ServerResponse;
 
 import com.linecorp.armeria.client.ClientFactory;
-import com.linecorp.armeria.client.ClientFactoryBuilder;
-import com.linecorp.armeria.client.HttpClient;
+import com.linecorp.armeria.client.WebClient;
 import com.linecorp.armeria.common.AggregatedHttpResponse;
 import com.linecorp.armeria.common.HttpData;
 import com.linecorp.armeria.common.HttpHeaderNames;
@@ -60,7 +59,6 @@ import com.linecorp.armeria.common.SessionProtocol;
 import com.linecorp.armeria.server.ServiceRequestContext;
 import com.linecorp.armeria.testing.internal.MockAddressResolverGroup;
 
-import io.netty.handler.ssl.util.InsecureTrustManagerFactory;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
@@ -95,27 +93,29 @@ class ReactiveWebServerAutoConfigurationTest {
 
         @Component
         static class TestHandler {
-            public Mono<ServerResponse> route(ServerRequest request) {
+            Mono<ServerResponse> route(ServerRequest request) {
                 assertThat(ServiceRequestContext.current()).isNotNull();
+                assertThat(request.remoteAddress()).isNotEmpty();
                 return ServerResponse.ok().contentType(MediaType.TEXT_PLAIN)
-                                     .body(BodyInserters.fromObject("route"));
+                                     .body(BodyInserters.fromValue("route"));
             }
 
-            public Mono<ServerResponse> route2(ServerRequest request) {
+            Mono<ServerResponse> route2(ServerRequest request) {
                 assertThat(ServiceRequestContext.current()).isNotNull();
+                assertThat(request.remoteAddress()).isNotEmpty();
                 return Mono.from(request.bodyToMono(Map.class))
                            .map(map -> assertThat(map.get("a")).isEqualTo(1))
                            .then(ServerResponse.ok().contentType(MediaType.APPLICATION_JSON)
-                                               .body(BodyInserters.fromObject("[\"route\"]")));
+                                               .body(BodyInserters.fromValue("[\"route\"]")));
             }
         }
     }
 
     private static final ClientFactory clientFactory =
-            new ClientFactoryBuilder()
-                    .sslContextCustomizer(b -> b.trustManager(InsecureTrustManagerFactory.INSTANCE))
-                    .addressResolverGroupFactory(eventLoopGroup -> MockAddressResolverGroup.localhost())
-                    .build();
+            ClientFactory.builder()
+                         .tlsNoVerify()
+                         .addressResolverGroupFactory(eventLoopGroup -> MockAddressResolverGroup.localhost())
+                         .build();
 
     @LocalServerPort
     int port;
@@ -124,7 +124,9 @@ class ReactiveWebServerAutoConfigurationTest {
     @ArgumentsSource(SchemesProvider.class)
     void shouldGetHelloFromRestController(String scheme) throws Exception {
         withTimeout(() -> {
-            final HttpClient client = HttpClient.of(clientFactory, scheme + "://example.com:" + port);
+            final WebClient client = WebClient.builder(scheme + "://example.com:" + port)
+                                              .factory(clientFactory)
+                                              .build();
             final AggregatedHttpResponse response = client.get("/hello").aggregate().join();
             assertThat(response.contentUtf8()).isEqualTo("hello");
         });
@@ -134,7 +136,9 @@ class ReactiveWebServerAutoConfigurationTest {
     @ArgumentsSource(SchemesProvider.class)
     void shouldGetHelloFromRouter(String scheme) throws Exception {
         withTimeout(() -> {
-            final HttpClient client = HttpClient.of(clientFactory, scheme + "://example.com:" + port);
+            final WebClient client = WebClient.builder(scheme + "://example.com:" + port)
+                                              .factory(clientFactory)
+                                              .build();
 
             final AggregatedHttpResponse res = client.get("/route").aggregate().join();
             assertThat(res.contentUtf8()).isEqualTo("route");
@@ -153,7 +157,9 @@ class ReactiveWebServerAutoConfigurationTest {
     @ArgumentsSource(SchemesProvider.class)
     void shouldGetNotFound(String scheme) {
         withTimeout(() -> {
-            final HttpClient client = HttpClient.of(clientFactory, scheme + "://example.com:" + port);
+            final WebClient client = WebClient.builder(scheme + "://example.com:" + port)
+                                              .factory(clientFactory)
+                                              .build();
             assertThat(client.get("/route2").aggregate().join().status()).isEqualTo(HttpStatus.NOT_FOUND);
 
             assertThat(client.execute(

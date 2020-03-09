@@ -9,7 +9,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import com.linecorp.armeria.common.sse.ServerSentEvent;
-import com.linecorp.armeria.common.sse.ServerSentEventBuilder;
 import com.linecorp.armeria.server.Server;
 import com.linecorp.armeria.server.annotation.Get;
 import com.linecorp.armeria.server.annotation.ProducesEventStream;
@@ -48,9 +47,9 @@ public final class Main {
                      .service("/long", (ctx, req) -> {
                          // Note that you MUST adjust the request timeout if you want to send events for a
                          // longer period than the configured request timeout. The timeout can be disabled by
-                         // setting 0 like the below, but it is NOT RECOMMENDED in the real world application,
-                         // because it can leave a lot of unfinished requests.
-                         ctx.setRequestTimeout(Duration.ZERO);
+                         // 'clearRequestTimeout()' like the below, but it is NOT RECOMMENDED in
+                         // the real world application, because it can leave a lot of unfinished requests.
+                         ctx.clearRequestTimeout();
                          return ServerSentEvents.fromPublisher(
                                  Flux.interval(sendingInterval)
                                      .take(eventCount)
@@ -66,17 +65,20 @@ public final class Main {
                              return Flux.interval(sendingInterval)
                                         .take(eventCount)
                                         // A user can use a builder to build a Server-Sent Event.
-                                        .map(id -> new ServerSentEventBuilder()
-                                                .id(Long.toString(id))
-                                                .data(randomStringSupplier.get())
-                                                // The client will reconnect to this server after 5 seconds
-                                                // when the on-going stream is closed.
-                                                .retry(Duration.ofSeconds(5))
-                                                .build());
+                                        .map(id -> ServerSentEvent.builder()
+                                                                  .id(Long.toString(id))
+                                                                  .data(randomStringSupplier.get())
+                                                                  // The client will reconnect to this server
+                                                                  // after 5 seconds when the on-going stream
+                                                                  // is closed.
+                                                                  .retry(Duration.ofSeconds(5))
+                                                                  .build());
                          }
                      })
-                     .service("/", HttpFile.ofResource(Main.class.getClassLoader(), "index.html").asService())
+                     .service("/", HttpFile.of(Main.class.getClassLoader(), "index.html").asService())
                      .decorator(LoggingService.newDecorator())
+                     .disableServerHeader()
+                     .disableDateHeader()
                      .build();
     }
 

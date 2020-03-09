@@ -17,7 +17,6 @@
 package com.linecorp.armeria.client;
 
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
 
@@ -29,15 +28,14 @@ import org.slf4j.LoggerFactory;
 import com.linecorp.armeria.common.HttpData;
 import com.linecorp.armeria.common.HttpHeaders;
 import com.linecorp.armeria.common.HttpObject;
-import com.linecorp.armeria.common.HttpRequest;
 import com.linecorp.armeria.common.HttpStatus;
 import com.linecorp.armeria.common.HttpStatusClass;
 import com.linecorp.armeria.common.RequestHeaders;
 import com.linecorp.armeria.common.ResponseHeaders;
-import com.linecorp.armeria.common.logging.RequestLogBuilder;
 import com.linecorp.armeria.common.stream.CancelledSubscriptionException;
 import com.linecorp.armeria.common.stream.StreamWriter;
 import com.linecorp.armeria.common.util.Exceptions;
+import com.linecorp.armeria.internal.DefaultTimeoutController;
 import com.linecorp.armeria.internal.InboundTrafficController;
 
 import io.netty.channel.Channel;
@@ -45,7 +43,6 @@ import io.netty.channel.EventLoop;
 import io.netty.util.ReferenceCountUtil;
 import io.netty.util.collection.IntObjectHashMap;
 import io.netty.util.collection.IntObjectMap;
-import io.netty.util.concurrent.ScheduledFuture;
 
 abstract class HttpResponseDecoder {
 
@@ -70,11 +67,11 @@ abstract class HttpResponseDecoder {
     }
 
     HttpResponseWrapper addResponse(
-            int id, @Nullable HttpRequest req, DecodedHttpResponse res, RequestLogBuilder logBuilder,
-            long responseTimeoutMillis, long maxContentLength) {
+            int id, DecodedHttpResponse res, @Nullable ClientRequestContext ctx,
+            EventLoop eventLoop, long responseTimeoutMillis, long maxContentLength) {
 
         final HttpResponseWrapper newRes =
-                new HttpResponseWrapper(req, res, logBuilder, responseTimeoutMillis, maxContentLength);
+                new HttpResponseWrapper(res, ctx, eventLoop, responseTimeoutMillis, maxContentLength);
         final HttpResponseWrapper oldRes = responses.put(id, newRes);
 
         assert oldRes == null : "addResponse(" + id + ", " + res + ", " + responseTimeoutMillis + "): " +
@@ -128,7 +125,8 @@ abstract class HttpResponseDecoder {
         return disconnectWhenFinished;
     }
 
-    static final class HttpResponseWrapper implements StreamWriter<HttpObject>, Runnable {
+    static final class HttpResponseWrapper
+            extends DefaultTimeoutController implements StreamWriter<HttpObject> {
 
         enum State {
             WAIT_NON_INFORMATIONAL,
@@ -136,43 +134,28 @@ abstract class HttpResponseDecoder {
             DONE
         }
 
-        @Nullable
-        private final HttpRequest request;
         private final DecodedHttpResponse delegate;
-        private final RequestLogBuilder logBuilder;
-        private final long responseTimeoutMillis;
-        private final long maxContentLength;
         @Nullable
-        private ScheduledFuture<?> responseTimeoutFuture;
+        private final ClientRequestContext ctx;
+        private final long maxContentLength;
+        private final long responseTimeoutMillis;
 
         private boolean loggedResponseFirstBytesTransferred;
 
         private State state = State.WAIT_NON_INFORMATIONAL;
 
-        HttpResponseWrapper(@Nullable HttpRequest request, DecodedHttpResponse delegate,
-                            RequestLogBuilder logBuilder, long responseTimeoutMillis, long maxContentLength) {
-            this.request = request;
+        HttpResponseWrapper(DecodedHttpResponse delegate, @Nullable ClientRequestContext ctx,
+                            EventLoop eventLoop, long responseTimeoutMillis, long maxContentLength) {
+            super(eventLoop);
             this.delegate = delegate;
-            this.logBuilder = logBuilder;
-            this.responseTimeoutMillis = responseTimeoutMillis;
+            this.ctx = ctx;
             this.maxContentLength = maxContentLength;
+            this.responseTimeoutMillis = responseTimeoutMillis;
+            setTimeoutTask(newTimeoutTask());
         }
 
         CompletableFuture<Void> completionFuture() {
             return delegate.completionFuture();
-        }
-
-        void scheduleTimeout(EventLoop eventLoop) {
-            if (responseTimeoutFuture != null || responseTimeoutMillis <= 0 || !isOpen()) {
-                // No need to schedule a response timeout if:
-                // - the timeout has been scheduled already,
-                // - the timeout has been disabled or
-                // - the response stream has been closed already.
-                return;
-            }
-
-            responseTimeoutFuture = eventLoop.schedule(
-                    this, responseTimeoutMillis, TimeUnit.MILLISECONDS);
         }
 
         long maxContentLength() {
@@ -185,19 +168,10 @@ abstract class HttpResponseDecoder {
 
         void logResponseFirstBytesTransferred() {
             if (!loggedResponseFirstBytesTransferred) {
-                logBuilder.responseFirstBytesTransferred();
+                if (ctx != null) {
+                    ctx.logBuilder().responseFirstBytesTransferred();
+                }
                 loggedResponseFirstBytesTransferred = true;
-            }
-        }
-
-        @Override
-        public void run() {
-            final ResponseTimeoutException cause = ResponseTimeoutException.get();
-            delegate.close(cause);
-            logBuilder.endResponse(cause);
-
-            if (request != null) {
-                request.abort();
             }
         }
 
@@ -218,7 +192,9 @@ abstract class HttpResponseDecoder {
             switch (state) {
                 case WAIT_NON_INFORMATIONAL:
                     // NB: It's safe to call logBuilder.startResponse() multiple times.
-                    logBuilder.startResponse();
+                    if (ctx != null) {
+                        ctx.logBuilder().startResponse();
+                    }
 
                     assert o instanceof HttpHeaders && !(o instanceof RequestHeaders) : o;
 
@@ -227,16 +203,22 @@ abstract class HttpResponseDecoder {
                         final HttpStatus status = headers.status();
                         if (status.codeClass() != HttpStatusClass.INFORMATIONAL) {
                             state = State.WAIT_DATA_OR_TRAILERS;
-                            logBuilder.responseHeaders(headers);
+                            if (ctx != null) {
+                                ctx.logBuilder().responseHeaders(headers);
+                            }
                         }
                     }
                     break;
                 case WAIT_DATA_OR_TRAILERS:
                     if (o instanceof HttpHeaders) {
                         state = State.DONE;
-                        logBuilder.responseTrailers((HttpHeaders) o);
+                        if (ctx != null) {
+                            ctx.logBuilder().responseTrailers((HttpHeaders) o);
+                        }
                     } else {
-                        logBuilder.increaseResponseLength((HttpData) o);
+                        if (ctx != null) {
+                            ctx.logBuilder().increaseResponseLength((HttpData) o);
+                        }
                     }
                     break;
                 case DONE:
@@ -276,36 +258,45 @@ abstract class HttpResponseDecoder {
 
             cancelTimeoutOrLog(cause, actionOnTimeoutCancelled);
 
-            if (request != null) {
-                request.abort();
+            if (ctx != null) {
+                if (cause == null) {
+                    ctx.request().abort();
+                } else {
+                    ctx.request().abort(cause);
+                }
             }
         }
 
         private void closeAction(@Nullable Throwable cause) {
             if (cause != null) {
                 delegate.close(cause);
-                logBuilder.endResponse(cause);
+                if (ctx != null) {
+                    ctx.logBuilder().endResponse(cause);
+                }
             } else {
                 delegate.close();
-                logBuilder.endResponse();
+                if (ctx != null) {
+                    ctx.logBuilder().endResponse();
+                }
             }
         }
 
         private void cancelAction(@Nullable Throwable cause) {
             if (cause != null && !(cause instanceof CancelledSubscriptionException)) {
-                logBuilder.endResponse(cause);
+                if (ctx != null) {
+                    ctx.logBuilder().endResponse(cause);
+                }
             } else {
-                logBuilder.endResponse();
+                if (ctx != null) {
+                    ctx.logBuilder().endResponse();
+                }
             }
         }
 
         private void cancelTimeoutOrLog(@Nullable Throwable cause,
                                         Consumer<Throwable> actionOnTimeoutCancelled) {
 
-            final ScheduledFuture<?> responseTimeoutFuture = this.responseTimeoutFuture;
-            this.responseTimeoutFuture = null;
-
-            if (responseTimeoutFuture == null || responseTimeoutFuture.cancel(false)) {
+            if (cancelTimeout()) {
                 // There's no timeout or the response has not been timed out.
                 actionOnTimeoutCancelled.accept(cause);
                 return;
@@ -322,14 +313,42 @@ abstract class HttpResponseDecoder {
             }
 
             final StringBuilder logMsg = new StringBuilder("Unexpected exception while closing a request");
-            if (request != null) {
-                final String authority = request.authority();
+            if (ctx != null) {
+                final String authority = ctx.request().authority();
                 if (authority != null) {
                     logMsg.append(" to ").append(authority);
                 }
             }
 
             logger.warn(logMsg.append(':').toString(), cause);
+        }
+
+        void initTimeout() {
+            initTimeout(responseTimeoutMillis);
+        }
+
+        private TimeoutTask newTimeoutTask() {
+            return new TimeoutTask() {
+                @Override
+                public boolean canSchedule() {
+                    return delegate.isOpen() && state != State.DONE;
+                }
+
+                @Override
+                public void run() {
+                    final Runnable responseTimeoutHandler = ctx != null ? ctx.responseTimeoutHandler() : null;
+                    if (responseTimeoutHandler != null) {
+                        responseTimeoutHandler.run();
+                    } else {
+                        final ResponseTimeoutException cause = ResponseTimeoutException.get();
+                        delegate.close(cause);
+                        if (ctx != null) {
+                            ctx.logBuilder().endResponse(cause);
+                            ctx.request().abort(cause);
+                        }
+                    }
+                }
+            };
         }
 
         @Override

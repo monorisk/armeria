@@ -16,6 +16,7 @@
 
 import path from 'path';
 
+import FaviconsWebpackPlugin from 'favicons-webpack-plugin';
 import HtmlWebpackPlugin from 'html-webpack-plugin';
 import { Configuration, DefinePlugin } from 'webpack';
 
@@ -93,6 +94,13 @@ const config: Configuration = {
   plugins: [
     new HtmlWebpackPlugin({
       template: './src/index.html',
+    }),
+    new FaviconsWebpackPlugin({
+      logo: './src/images/logo.png',
+      // We don't need the many different icon versions of webapp mode and use light mode
+      // to keep JAR size down.
+      mode: 'light',
+      devMode: 'light',
     }),
     new DefinePlugin({
       'process.env.WEBPACK_DEV': JSON.stringify(process.env.WEBPACK_DEV),

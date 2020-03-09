@@ -36,8 +36,7 @@ import org.springframework.util.SocketUtils;
 import org.springframework.util.unit.DataSize;
 
 import com.linecorp.armeria.client.ClientFactory;
-import com.linecorp.armeria.client.ClientFactoryBuilder;
-import com.linecorp.armeria.client.HttpClient;
+import com.linecorp.armeria.client.WebClient;
 import com.linecorp.armeria.common.AggregatedHttpResponse;
 import com.linecorp.armeria.common.HttpData;
 import com.linecorp.armeria.common.HttpHeaderNames;
@@ -50,7 +49,6 @@ import com.linecorp.armeria.spring.ArmeriaSettings;
 import com.linecorp.armeria.testing.internal.MockAddressResolverGroup;
 
 import io.micrometer.core.instrument.MeterRegistry;
-import io.netty.handler.ssl.util.InsecureTrustManagerFactory;
 import reactor.core.publisher.Mono;
 
 class ArmeriaReactiveWebServerFactoryTest {
@@ -59,21 +57,25 @@ class ArmeriaReactiveWebServerFactoryTest {
 
     private final DefaultListableBeanFactory beanFactory = new DefaultListableBeanFactory();
     private final ClientFactory clientFactory =
-            new ClientFactoryBuilder()
-                    .sslContextCustomizer(b -> b.trustManager(InsecureTrustManagerFactory.INSTANCE))
-                    .addressResolverGroupFactory(eventLoopGroup -> MockAddressResolverGroup.localhost())
-                    .build();
+            ClientFactory.builder()
+                         .tlsNoVerify()
+                         .addressResolverGroupFactory(eventLoopGroup -> MockAddressResolverGroup.localhost())
+                         .build();
 
     private ArmeriaReactiveWebServerFactory factory() {
         return new ArmeriaReactiveWebServerFactory(beanFactory);
     }
 
-    private HttpClient httpsClient(WebServer server) {
-        return HttpClient.of(clientFactory, "https://example.com:" + server.getPort());
+    private WebClient httpsClient(WebServer server) {
+        return WebClient.builder("https://example.com:" + server.getPort())
+                        .factory(clientFactory)
+                        .build();
     }
 
-    private HttpClient httpClient(WebServer server) {
-        return HttpClient.of(clientFactory, "http://example.com:" + server.getPort());
+    private WebClient httpClient(WebServer server) {
+        return WebClient.builder("http://example.com:" + server.getPort())
+                        .factory(clientFactory)
+                        .build();
     }
 
     @Test
@@ -88,7 +90,7 @@ class ArmeriaReactiveWebServerFactoryTest {
     void shouldReturnEchoResponse() {
         final ArmeriaReactiveWebServerFactory factory = factory();
         runEchoServer(factory, server -> {
-            final HttpClient client = httpClient(server);
+            final WebClient client = httpClient(server);
             validateEchoResponse(sendPostRequest(client));
 
             final AggregatedHttpResponse res = client.get("/hello").aggregate().join();
@@ -110,7 +112,7 @@ class ArmeriaReactiveWebServerFactoryTest {
     void shouldReturnBadRequestDueToException() {
         final ArmeriaReactiveWebServerFactory factory = factory();
         runServer(factory, AlwaysFailureHandler.INSTANCE, server -> {
-            final HttpClient client = httpClient(server);
+            final WebClient client = httpClient(server);
 
             final AggregatedHttpResponse res1 = client.post("/hello", "hello").aggregate().join();
             assertThat(res1.status()).isEqualTo(com.linecorp.armeria.common.HttpStatus.BAD_REQUEST);
@@ -167,7 +169,7 @@ class ArmeriaReactiveWebServerFactoryTest {
         });
     }
 
-    private static AggregatedHttpResponse sendPostRequest(HttpClient client) {
+    private static AggregatedHttpResponse sendPostRequest(WebClient client) {
         final RequestHeaders requestHeaders =
                 RequestHeaders.of(HttpMethod.POST, "/hello",
                                   HttpHeaderNames.USER_AGENT, "test-agent/1.0.0",
@@ -256,7 +258,7 @@ class ArmeriaReactiveWebServerFactoryTest {
         beanFactory.registerBeanDefinition("meterRegistry2", rbd);
 
         runEchoServer(factory, server -> {
-            final HttpClient client = httpClient(server);
+            final WebClient client = httpClient(server);
             validateEchoResponse(sendPostRequest(client));
 
             final AggregatedHttpResponse res = client.get("/hello").aggregate().join();

@@ -30,12 +30,10 @@ import org.junit.jupiter.params.provider.EnumSource;
 import com.google.common.collect.ImmutableList;
 
 import com.linecorp.armeria.client.Endpoint;
-import com.linecorp.armeria.client.HttpClient;
-import com.linecorp.armeria.client.HttpClientBuilder;
+import com.linecorp.armeria.client.WebClient;
 import com.linecorp.armeria.client.endpoint.EndpointGroup;
 import com.linecorp.armeria.client.endpoint.EndpointGroupRegistry;
 import com.linecorp.armeria.client.endpoint.EndpointSelectionStrategy;
-import com.linecorp.armeria.client.endpoint.StaticEndpointGroup;
 import com.linecorp.armeria.common.HttpResponse;
 import com.linecorp.armeria.common.HttpStatus;
 import com.linecorp.armeria.common.logging.RequestLogAvailability;
@@ -92,10 +90,9 @@ class RetryingClientLoadBalancingTest {
                                                   .map(InetSocketAddress::getPort)
                                                   .collect(toImmutableList());
 
-        final EndpointGroup group =
-                new StaticEndpointGroup(expectedPorts.stream()
-                                                     .map(port -> Endpoint.of("127.0.0.1", port))
-                                                     .collect(toImmutableList()));
+        final EndpointGroup group = EndpointGroup.of(expectedPorts.stream()
+                                                                  .map(port -> Endpoint.of("127.0.0.1", port))
+                                                                  .collect(toImmutableList()));
 
         final String groupName = "loadBalancedRetry";
         EndpointGroupRegistry.register(groupName, group, EndpointSelectionStrategy.ROUND_ROBIN);
@@ -110,16 +107,16 @@ class RetryingClientLoadBalancingTest {
                 }
 
                 // Retry only once on failure.
-                if (!HttpStatus.OK.equals(status) && RetryingClient.getTotalAttempts(ctx) <= 1) {
+                if (!HttpStatus.OK.equals(status) && AbstractRetryingClient.getTotalAttempts(ctx) <= 1) {
                     return CompletableFuture.completedFuture(Backoff.withoutDelay());
                 } else {
                     return CompletableFuture.completedFuture(null);
                 }
             };
-            final HttpClient c = new HttpClientBuilder("h2c://group:" + groupName)
-                    .decorator(RetryingHttpClient.builder(retryStrategy)
-                                                 .newDecorator())
-                    .build();
+            final WebClient c = WebClient.builder("h2c://group:" + groupName)
+                                         .decorator(RetryingClient.builder(retryStrategy)
+                                                                  .newDecorator())
+                                         .build();
 
             for (int i = 0; i < NUM_PORTS; i++) {
                 c.get(mode.path).aggregate().join();
@@ -132,9 +129,9 @@ class RetryingClientLoadBalancingTest {
                 case FAILURE:
                     final List<Integer> expectedPortsWhenRetried =
                             ImmutableList.<Integer>builder()
-                                         .addAll(expectedPorts)
-                                         .addAll(expectedPorts)
-                                         .build();
+                                    .addAll(expectedPorts)
+                                    .addAll(expectedPorts)
+                                    .build();
                     assertThat(accessedPorts).isEqualTo(expectedPortsWhenRetried);
                     break;
             }

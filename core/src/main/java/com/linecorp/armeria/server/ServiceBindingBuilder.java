@@ -22,20 +22,19 @@ import java.nio.charset.Charset;
 import java.time.Duration;
 import java.util.function.Consumer;
 import java.util.function.Function;
+import java.util.function.Predicate;
 
 import com.linecorp.armeria.common.HttpMethod;
-import com.linecorp.armeria.common.HttpRequest;
-import com.linecorp.armeria.common.HttpResponse;
 import com.linecorp.armeria.common.MediaType;
 import com.linecorp.armeria.common.logging.ContentPreviewerFactory;
 import com.linecorp.armeria.server.logging.AccessLogWriter;
 
 /**
- * A builder class for binding a {@link Service} fluently. This class can be instantiated through
- * {@link ServerBuilder#route()}. You can also configure a {@link Service} using
+ * A builder class for binding an {@link HttpService} fluently. This class can be instantiated through
+ * {@link ServerBuilder#route()}. You can also configure an {@link HttpService} using
  * {@link ServerBuilder#withRoute(Consumer)}.
  *
- * <p>Call {@link #build(Service)} to build the {@link Service} and return to the {@link ServerBuilder}.
+ * <p>Call {@link #build(HttpService)} to build the {@link HttpService} and return to the {@link ServerBuilder}.
  *
  * <pre>{@code
  * ServerBuilder sb = Server.builder();
@@ -162,6 +161,37 @@ public final class ServiceBindingBuilder extends AbstractServiceBindingBuilder {
     }
 
     @Override
+    public ServiceBindingBuilder matchesParams(String... paramPredicates) {
+        return (ServiceBindingBuilder) super.matchesParams(paramPredicates);
+    }
+
+    @Override
+    public ServiceBindingBuilder matchesParams(Iterable<String> paramPredicates) {
+        return (ServiceBindingBuilder) super.matchesParams(paramPredicates);
+    }
+
+    @Override
+    public ServiceBindingBuilder matchesParams(String paramName, Predicate<? super String> valuePredicate) {
+        return (ServiceBindingBuilder) super.matchesParams(paramName, valuePredicate);
+    }
+
+    @Override
+    public ServiceBindingBuilder matchesHeaders(String... headerPredicates) {
+        return (ServiceBindingBuilder) super.matchesHeaders(headerPredicates);
+    }
+
+    @Override
+    public ServiceBindingBuilder matchesHeaders(Iterable<String> headerPredicates) {
+        return (ServiceBindingBuilder) super.matchesHeaders(headerPredicates);
+    }
+
+    @Override
+    public ServiceBindingBuilder matchesHeaders(CharSequence headerName,
+                                                Predicate<? super String> valuePredicate) {
+        return (ServiceBindingBuilder) super.matchesHeaders(headerName, valuePredicate);
+    }
+
+    @Override
     public ServiceBindingBuilder requestTimeout(Duration requestTimeout) {
         return (ServiceBindingBuilder) super.requestTimeout(requestTimeout);
     }
@@ -207,23 +237,27 @@ public final class ServiceBindingBuilder extends AbstractServiceBindingBuilder {
     }
 
     @Override
+    public ServiceBindingBuilder accessLogFormat(String accessLogFormat) {
+        return (ServiceBindingBuilder) super.accessLogFormat(accessLogFormat);
+    }
+
+    @Override
     public ServiceBindingBuilder accessLogWriter(AccessLogWriter accessLogWriter, boolean shutdownOnStop) {
         return (ServiceBindingBuilder) super.accessLogWriter(accessLogWriter, shutdownOnStop);
     }
 
     @Override
-    public <T extends Service<HttpRequest, HttpResponse>, R extends Service<HttpRequest, HttpResponse>>
-    ServiceBindingBuilder decorator(Function<T, R> decorator) {
+    public ServiceBindingBuilder decorator(Function<? super HttpService, ? extends HttpService> decorator) {
         return (ServiceBindingBuilder) super.decorator(decorator);
     }
 
     /**
-     * Sets the {@link Service} and returns the {@link ServerBuilder} that this
+     * Sets the {@link HttpService} and returns the {@link ServerBuilder} that this
      * {@link ServiceBindingBuilder} was created from.
      *
-     * @throws IllegalStateException if the path that the {@link Service} will be bound to is not specified
+     * @throws IllegalStateException if the path that the {@link HttpService} will be bound to is not specified
      */
-    public ServerBuilder build(Service<HttpRequest, HttpResponse> service) {
+    public ServerBuilder build(HttpService service) {
         build0(service);
         return serverBuilder;
     }

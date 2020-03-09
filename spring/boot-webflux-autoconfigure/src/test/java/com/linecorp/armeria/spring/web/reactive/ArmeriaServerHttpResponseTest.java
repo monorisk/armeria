@@ -25,7 +25,7 @@ import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 import org.reactivestreams.Subscriber;
 import org.reactivestreams.Subscription;
 import org.springframework.core.io.buffer.DataBuffer;
@@ -34,6 +34,7 @@ import org.springframework.core.io.buffer.NettyDataBufferFactory;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseCookie;
 
+import com.linecorp.armeria.common.Cookie;
 import com.linecorp.armeria.common.HttpHeaderNames;
 import com.linecorp.armeria.common.HttpHeaders;
 import com.linecorp.armeria.common.HttpMethod;
@@ -44,13 +45,11 @@ import com.linecorp.armeria.common.ResponseHeaders;
 import com.linecorp.armeria.server.ServiceRequestContext;
 
 import io.netty.buffer.PooledByteBufAllocator;
-import io.netty.handler.codec.http.cookie.ClientCookieDecoder;
-import io.netty.handler.codec.http.cookie.Cookie;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.test.StepVerifier;
 
-public class ArmeriaServerHttpResponseTest {
+class ArmeriaServerHttpResponseTest {
 
     static final ServiceRequestContext ctx = ServiceRequestContext.of(HttpRequest.of(HttpMethod.GET, "/"));
 
@@ -60,13 +59,13 @@ public class ArmeriaServerHttpResponseTest {
     }
 
     @Test
-    public void returnHeadersOnly() throws Exception {
+    void returnHeadersOnly() throws Exception {
         final CompletableFuture<HttpResponse> future = new CompletableFuture<>();
         final ArmeriaServerHttpResponse response = response(ctx, future);
 
         response.setStatusCode(HttpStatus.NOT_FOUND);
         response.addCookie(ResponseCookie.from("a", "1")
-                                         .domain("http://localhost")
+                                         .domain("localhost")
                                          .path("/")
                                          // A negative value means no "Max-Age" attribute in which case
                                          // the cookie is removed when the browser is closed.
@@ -93,11 +92,13 @@ public class ArmeriaServerHttpResponseTest {
                         assertThat(o).isInstanceOf(ResponseHeaders.class);
                         final ResponseHeaders headers = (ResponseHeaders) o;
                         assertThat(headers.status().code()).isEqualTo(404);
-                        final Cookie setCookie =
-                                ClientCookieDecoder.LAX.decode(headers.get(HttpHeaderNames.SET_COOKIE));
+                        final String setCookieValue = headers.get(HttpHeaderNames.SET_COOKIE);
+                        assertThat(setCookieValue).isNotNull();
+                        final Cookie setCookie = Cookie.fromSetCookieHeader(setCookieValue);
+                        assertThat(setCookie).isNotNull();
                         assertThat(setCookie.name()).isEqualTo("a");
                         assertThat(setCookie.value()).isEqualTo("1");
-                        assertThat(setCookie.domain()).isEqualTo("http://localhost");
+                        assertThat(setCookie.domain()).isEqualTo("localhost");
                         assertThat(setCookie.path()).isEqualTo("/");
                         assertThat(setCookie.maxAge()).isEqualTo(Cookie.UNDEFINED_MAX_AGE);
                         assertThat(setCookie.isSecure()).isTrue();
@@ -110,14 +111,14 @@ public class ArmeriaServerHttpResponseTest {
     }
 
     @Test
-    public void returnHeadersAndBody() throws Exception {
+    void returnHeadersAndBody() throws Exception {
         final CompletableFuture<HttpResponse> future = new CompletableFuture<>();
         final ArmeriaServerHttpResponse response = response(ctx, future);
 
         response.setStatusCode(HttpStatus.OK);
         response.getHeaders().add("Armeria", "awesome");
         response.addCookie(ResponseCookie.from("a", "1")
-                                         .domain("http://localhost")
+                                         .domain("localhost")
                                          .path("/")
                                          .maxAge(Duration.ofSeconds(60))
                                          .secure(true)
@@ -147,11 +148,13 @@ public class ArmeriaServerHttpResponseTest {
                         final ResponseHeaders headers = (ResponseHeaders) o;
                         assertThat(headers.status().code()).isEqualTo(200);
                         assertThat(headers.get(HttpHeaderNames.of("Armeria"))).isEqualTo("awesome");
-                        final Cookie setCookie =
-                                ClientCookieDecoder.LAX.decode(headers.get(HttpHeaderNames.SET_COOKIE));
+                        final String setCookieValue = headers.get(HttpHeaderNames.SET_COOKIE);
+                        assertThat(setCookieValue).isNotNull();
+                        final Cookie setCookie = Cookie.fromSetCookieHeader(setCookieValue);
+                        assertThat(setCookie).isNotNull();
                         assertThat(setCookie.name()).isEqualTo("a");
                         assertThat(setCookie.value()).isEqualTo("1");
-                        assertThat(setCookie.domain()).isEqualTo("http://localhost");
+                        assertThat(setCookie.domain()).isEqualTo("localhost");
                         assertThat(setCookie.path()).isEqualTo("/");
                         assertThat(setCookie.maxAge()).isEqualTo(Duration.ofSeconds(60).getSeconds());
                         assertThat(setCookie.isSecure()).isTrue();
@@ -169,7 +172,7 @@ public class ArmeriaServerHttpResponseTest {
     }
 
     @Test
-    public void controlBackpressure() throws Exception {
+    void controlBackpressure() throws Exception {
         final CompletableFuture<HttpResponse> future = new CompletableFuture<>();
         final ArmeriaServerHttpResponse response = response(ctx, future);
 
@@ -215,7 +218,7 @@ public class ArmeriaServerHttpResponseTest {
     }
 
     @Test
-    public void returnHeadersAndBodyWithMultiplePublisher() throws Exception {
+    void returnHeadersAndBodyWithMultiplePublisher() throws Exception {
         final CompletableFuture<HttpResponse> future = new CompletableFuture<>();
         final ArmeriaServerHttpResponse response = response(ctx, future);
 
@@ -263,7 +266,7 @@ public class ArmeriaServerHttpResponseTest {
     }
 
     @Test
-    public void requestInvalidDemand() throws Exception {
+    void requestInvalidDemand() throws Exception {
         final ConcurrentLinkedQueue<NettyDataBuffer> allocatedBuffers = new ConcurrentLinkedQueue<>();
         final DataBufferFactoryWrapper<NettyDataBufferFactory> factoryWrapper = new DataBufferFactoryWrapper<>(
                 new NettyDataBufferFactory(PooledByteBufAllocator.DEFAULT) {

@@ -16,55 +16,35 @@
 
 package com.linecorp.armeria.client.circuitbreaker;
 
-import java.util.function.Function;
-
-import com.linecorp.armeria.client.Client;
-import com.linecorp.armeria.common.HttpRequest;
 import com.linecorp.armeria.common.HttpResponse;
 
 /**
- * Builds a new {@link CircuitBreakerHttpClient} or its decorator function.
+ * Builds a new {@link CircuitBreakerClient} or its decorator function.
+ *
+ * @deprecated Use {@link CircuitBreakerClientBuilder}.
  */
-public final class CircuitBreakerHttpClientBuilder
-        extends CircuitBreakerClientBuilder<CircuitBreakerHttpClient, HttpRequest, HttpResponse> {
-
-    private final boolean needsContentInStrategy;
+@Deprecated
+public final class CircuitBreakerHttpClientBuilder extends CircuitBreakerClientBuilder {
 
     /**
      * Creates a new builder with the specified {@link CircuitBreakerStrategy}.
      *
-     * @deprecated Use {@link CircuitBreakerHttpClient#builder(CircuitBreakerStrategy)}.
+     * @deprecated Use {@link CircuitBreakerClient#builder(CircuitBreakerStrategy)}.
      */
     @Deprecated
     public CircuitBreakerHttpClientBuilder(CircuitBreakerStrategy strategy) {
         super(strategy);
-        needsContentInStrategy = false;
     }
 
     /**
      * Creates a new builder with the specified {@link CircuitBreakerStrategyWithContent}.
      *
-     * @deprecated Use {@link CircuitBreakerHttpClient#builder(CircuitBreakerStrategyWithContent)}.
+     * @deprecated Use {@link CircuitBreakerClient#builder(CircuitBreakerStrategyWithContent)}.
      */
     @Deprecated
     public CircuitBreakerHttpClientBuilder(
             CircuitBreakerStrategyWithContent<HttpResponse> strategyWithContent) {
         super(strategyWithContent);
-        needsContentInStrategy = true;
-    }
-
-    @Override
-    public CircuitBreakerHttpClient build(Client<HttpRequest, HttpResponse> delegate) {
-        if (needsContentInStrategy) {
-            return new CircuitBreakerHttpClient(delegate, mapping(), strategyWithContent());
-        }
-
-        return new CircuitBreakerHttpClient(delegate, mapping(), strategy());
-    }
-
-    @Override
-    public Function<Client<HttpRequest, HttpResponse>, CircuitBreakerHttpClient> newDecorator() {
-        return this::build;
     }
 
     // Methods that were overridden to change the return type.

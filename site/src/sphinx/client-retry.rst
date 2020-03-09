@@ -9,7 +9,7 @@ Automatic retry
 When a client gets an error response, it might want to retry the request depending on the response.
 This can be accomplished using a decorator_, and Armeria provides the following implementations out-of-the box.
 
-- :api:`RetryingHttpClient`
+- :api:`RetryingClient`
 - :api:`RetryingRpcClient`
 
 Both behave the same except for the different request and response types.
@@ -18,26 +18,26 @@ So, let's find out what we can do with :api:`RetryingClient`.
 ``RetryingClient``
 ------------------
 
-You can just use the ``decorator()`` method in :api:`ClientBuilder` or :api:`HttpClientBuilder` to build a :api:`RetryingHttpClient`. For example:
+You can just use the ``decorator()`` method in :api:`ClientBuilder` or :api:`WebClientBuilder` to build a
+:api:`RetryingClient`. For example:
 
 .. code-block:: java
 
-    import com.linecorp.armeria.client.HttpClient;
-    import com.linecorp.armeria.client.HttpClientBuilder;
-    import com.linecorp.armeria.client.retry.RetryingHttpClient;
+    import com.linecorp.armeria.client.WebClient;
+    import com.linecorp.armeria.client.retry.RetryingClient;
     import com.linecorp.armeria.client.retry.RetryStrategy;
     import com.linecorp.armeria.common.AggregatedHttpResponse;
 
     RetryStrategy strategy = RetryStrategy.onServerErrorStatus();
-    HttpClient client = new HttpClientBuilder("http://example.com/hello")
-            .decorator(RetryingHttpClient.newDecorator(strategy))
-            .build();
+    WebClient client = WebClient.builder("http://example.com/hello")
+                                .decorator(RetryingClient.newDecorator(strategy))
+                                .build();
 
-    final AggregatedHttpResponse res = client.execute(...).aggregate().join();
+    AggregatedHttpResponse res = client.execute(...).aggregate().join();
 
 That's it. The client will keep attempting until it succeeds or the number of attempts exceeds the maximum
 number of total attempts. You can configure the ``maxTotalAttempts`` when making the decorator using
-``RetryingHttpClient.newDecorator(strategy, maxTotalAttempts)``. Meanwhile, the ``strategy`` will decide to
+``RetryingClient.newDecorator(strategy, maxTotalAttempts)``. Meanwhile, the ``strategy`` will decide to
 retry depending on the response. In this case, the client retries when it receives ``5xx`` response error or
 an exception is raised.
 
@@ -57,7 +57,7 @@ You can customize the ``strategy`` by implementing :api:`RetryStrategy`.
     import com.linecorp.armeria.common.HttpStatus;
 
     new RetryStrategy() {
-        final Backoff backoff = Backoff.ofDefault();
+        Backoff backoff = Backoff.ofDefault();
 
         @Override
         public CompletionStage<Backoff> shouldRetry(ClientRequestContext ctx,
@@ -107,8 +107,8 @@ You can return a different :api:`Backoff` according to the response status.
     import com.linecorp.armeria.common.HttpStatusClass;
 
     new RetryStrategy() {
-        final Backoff backoffOnServerErrorOrTimeout = Backoff.ofDefault();
-        final Backoff backoffOnConflict = Backoff.fixed(100);
+        Backoff backoffOnServerErrorOrTimeout = Backoff.ofDefault();
+        Backoff backoffOnConflict = Backoff.fixed(100);
 
         @Override
         public CompletionStage<Backoff> shouldRetry(ClientRequestContext ctx,
@@ -135,17 +135,17 @@ You can return a different :api:`Backoff` according to the response status.
     };
 
 If you need to determine whether you need to retry by looking into the response content, you should implement
-:api:`RetryStrategyWithContent` and specify it when you create an :api:`HttpClient`
-using :api:`RetryingHttpClientBuilder`:
+:api:`RetryStrategyWithContent` and specify it when you create an :api:`WebClient`
+using :api:`RetryingClientBuilder`:
 
 .. code-block:: java
 
     import com.linecorp.armeria.client.retry.RetryStrategyWithContent;
 
-    final RetryStrategyWithContent<HttpResponse> strategy =
+    RetryStrategyWithContent<HttpResponse> strategy =
         new RetryStrategyWithContent<HttpResponse>() {
 
-            final Backoff backoff = Backoff.ofDefault();
+            Backoff backoff = Backoff.ofDefault();
 
             @Override
             public CompletionStage<Backoff> shouldRetry(ClientRequestContext ctx,
@@ -166,13 +166,14 @@ using :api:`RetryingHttpClientBuilder`:
             }
         };
 
-    // Create an HttpClient with a custom strategy.
-    final HttpClient client = new HttpClientBuilder(...)
-            .decorator(RetryingHttpClient.builder(strategy)
-                                         .newDecorator())
+    // Create an WebClient with a custom strategy.
+    WebClient client = WebClient
+            .builder(...)
+            .decorator(RetryingClient.builder(strategy)
+                                     .newDecorator())
             .build();
 
-    final AggregatedHttpResponse res = client.execute(...).aggregate().join();
+    AggregatedHttpResponse res = client.execute(...).aggregate().join();
 
 .. tip::
 
@@ -239,7 +240,7 @@ the maximum number of total attempts to 10 by default. You can change this value
 
 .. code-block:: java
 
-    RetryingHttpClient.newDecorator(strategy, maxTotalAttempts);
+    RetryingClient.newDecorator(strategy, maxTotalAttempts);
 
 Or, you can override the default value of 10 using the JVM system property
 ``-Dcom.linecorp.armeria.defaultMaxTotalAttempts=<integer>``.
@@ -257,7 +258,7 @@ when the time of whole retry session has passed the time previously configured u
 
     ClientBuilder.responseTimeoutMillis(millis);
     // or..
-    ClientRequestContext.setResponseTimeoutMillis(millis);
+    ClientRequestContext.setResponseTimeoutAfterMillis(millis);
 
 You cannot retry on this :api:`ResponseTimeoutException`.
 Second, it occurs when the time of individual attempt in retry has passed the time which is per-attempt timeout.
@@ -265,8 +266,8 @@ You can configure it when you create the decorator:
 
 .. code-block:: java
 
-    RetryingHttpClient.newDecorator(strategy, maxTotalAttempts,
-                                    responseTimeoutMillisForEachAttempt);
+    RetryingClient.newDecorator(strategy, maxTotalAttempts,
+                                responseTimeoutMillisForEachAttempt);
 
 You can retry on this :api:`ResponseTimeoutException`.
 
@@ -308,11 +309,11 @@ Consider the following example:
                                     stops retrying at this point
     @endditaa
 
-Unlike the example above, the :api:`Backoff` is enabled and it makes the :api:`RetryingClient` perform retries
-with 3-second delay. When the second attempt is finished at 9,000ms, the next attempt will be at 12,000ms
-exceeding the response timeout of 10,000ms.
-The :api:`RetryingClient`, at this point, stops retrying and finished the retry session with the last received
-:api:`Response`, retrieved at 9,000ms from the attempt 2.
+Unlike the example above, the :api:`Backoff` is enabled and it makes the :api:`RetryingClient` perform
+retries with 3-second delay. When the second attempt is finished at 9,000ms, the next attempt will be
+at 12,000ms exceeding the response timeout of 10,000ms.
+The :api:`RetryingClient`, at this point, stops retrying and finished the retry session with the last
+received :api:`Response`, retrieved at 9,000ms from the attempt 2.
 
 .. _retry-with-logging:
 
@@ -325,10 +326,10 @@ requests and responses, decorate :api:`LoggingClient` with :api:`RetryingClient`
 .. code-block:: java
 
     RetryStrategy strategy = RetryStrategy.onServerErrorStatus();
-    HttpClient client = new HttpClientBuilder(...)
-            .decorator(LoggingClient.newDecorator())
-            .decorator(RetryingHttpClient.newDecorator(strategy))
-            .build();
+    WebClient client = WebClient.builder(...)
+                                .decorator(LoggingClient.newDecorator())
+                                .decorator(RetryingClient.newDecorator(strategy))
+                                .build();
 
 This will produce following logs when there are three attempts:
 
@@ -356,10 +357,10 @@ do the reverse:
 
     RetryStrategy strategy = RetryStrategy.onServerErrorStatus();
     // Note the order of decoration.
-    HttpClient client = new HttpClientBuilder(...)
-            .decorator(RetryingHttpClient.newDecorator(strategy))
-            .decorator(LoggingClient.newDecorator())
-            .build();
+    WebClient client = WebClient.builder(...)
+                                .decorator(RetryingClient.newDecorator(strategy))
+                                .decorator(LoggingClient.newDecorator())
+                                .build();
 
 This will produce single request and response log pair and the total number of attempts only, regardless
 how many attempts are made:
@@ -376,29 +377,29 @@ how many attempts are made:
 ``RetryingClient`` with circuit breaker
 ---------------------------------------
 
-You might want to use :ref:`client-circuit-breaker` with :api:`RetryingHttpClient` using decorator_:
+You might want to use :ref:`client-circuit-breaker` with :api:`RetryingClient` using decorator_:
 
 .. code-block:: java
 
     import com.linecorp.armeria.client.circuitbreaker.CircuitBreakerStrategy;
-    import com.linecorp.armeria.client.circuitbreaker.CircuitBreakerHttpClientBuilder;
+    import com.linecorp.armeria.client.circuitbreaker.CircuitBreakerClientBuilder;
 
     CircuitBreakerStrategy cbStrategy = CircuitBreakerStrategy.onServerErrorStatus();
     RetryStrategy myRetryStrategy = new RetryStrategy() { ... };
 
-    HttpClient client = new HttpClientBuilder(...)
-            .decorator(CircuitBreakerHttpClient.builder(cbStrategy)
-                                               .newDecorator())
-            .decorator(RetryingHttpClient.builder(myRetryStrategy)
-                                         .newDecorator())
-            .build();
+    WebClient client = WebClient.builder(...)
+                                .decorator(CircuitBreakerClient.builder(cbStrategy)
+                                                               .newDecorator())
+                                .decorator(RetryingClient.builder(myRetryStrategy)
+                                                         .newDecorator())
+                                .build();
 
-    final AggregatedHttpResponse res = client.execute(...).aggregate().join();
+    AggregatedHttpResponse res = client.execute(...).aggregate().join();
 
-This decorates :api:`CircuitBreakerHttpClient` with :api:`RetryingHttpClient` so that the :api:`CircuitBreaker`
+This decorates :api:`CircuitBreakerClient` with :api:`RetryingClient` so that the :api:`CircuitBreaker`
 judges every request and retried request as successful or failed. If the failure rate exceeds a certain
 threshold, it raises a :api:`FailFastException`. When using both clients, you need to write a custom
-:api:`RetryStrategy` to handle this exception so that the :api:`RetryingHttpClient` does not attempt
+:api:`RetryStrategy` to handle this exception so that the :api:`RetryingClient` does not attempt
 a retry unnecessarily when the circuit is open, e.g.
 
 .. code-block:: java
@@ -406,7 +407,7 @@ a retry unnecessarily when the circuit is open, e.g.
     import com.linecorp.armeria.client.circuitbreaker.FailFastException;
 
     new RetryStrategy() {
-        final Backoff backoff = Backoff.ofDefault();
+        Backoff backoff = Backoff.ofDefault();
 
         @Override
         public CompletionStage<Backoff> shouldRetry(ClientRequestContext ctx,

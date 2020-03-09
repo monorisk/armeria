@@ -48,19 +48,19 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.common.collect.ImmutableMap;
 
-import com.linecorp.armeria.client.ClientOptionsBuilder;
-import com.linecorp.armeria.client.Clients;
-import com.linecorp.armeria.client.HttpClient;
+import com.linecorp.armeria.client.WebClient;
 import com.linecorp.armeria.common.AggregatedHttpResponse;
 import com.linecorp.armeria.common.HttpData;
 import com.linecorp.armeria.common.HttpHeaderNames;
 import com.linecorp.armeria.common.HttpMethod;
+import com.linecorp.armeria.common.HttpRequest;
 import com.linecorp.armeria.common.HttpResponse;
 import com.linecorp.armeria.common.HttpStatus;
 import com.linecorp.armeria.common.MediaType;
 import com.linecorp.armeria.common.RequestHeaders;
 import com.linecorp.armeria.common.ResponseHeaders;
 import com.linecorp.armeria.server.Server;
+import com.linecorp.armeria.spring.ArmeriaServerConfigurator;
 import com.linecorp.armeria.spring.actuate.ArmeriaSpringActuatorAutoConfigurationTest.TestConfiguration;
 
 import io.prometheus.client.exporter.common.TextFormat;
@@ -68,7 +68,7 @@ import reactor.test.StepVerifier;
 
 /**
  * This uses {@link com.linecorp.armeria.spring.ArmeriaAutoConfiguration} for integration tests.
- * application-autoConfTest.yml will be loaded with minimal settings to make it work.
+ * {@code application-autoConfTest.yml} will be loaded with minimal settings to make it work.
  */
 @RunWith(SpringRunner.class)
 @SpringBootTest(classes = TestConfiguration.class)
@@ -108,10 +108,17 @@ public class ArmeriaSpringActuatorAutoConfigurationTest {
         public SettableHealthIndicator settableHealth() {
             return new SettableHealthIndicator();
         }
+
+        @Bean
+        public ArmeriaServerConfigurator serverConfigurator() {
+            return sb -> sb.requestTimeoutMillis(TIMEOUT_MILLIS);
+        }
     }
 
+    private static final long TIMEOUT_MILLIS = TimeUnit.SECONDS.toMillis(30);
+
     @Rule
-    public TestRule globalTimeout = new DisableOnDebug(new Timeout(10, TimeUnit.SECONDS));
+    public TestRule globalTimeout = new DisableOnDebug(new Timeout(TIMEOUT_MILLIS, TimeUnit.MILLISECONDS));
 
     @Inject
     private Server server;
@@ -119,11 +126,14 @@ public class ArmeriaSpringActuatorAutoConfigurationTest {
     @Inject
     private SettableHealthIndicator settableHealth;
 
-    private HttpClient client;
+    private WebClient client;
 
     @Before
     public void setUp() {
-        client = HttpClient.of(newUrl("h2c"));
+        client = WebClient.builder(newUrl("h2c"))
+                          .responseTimeoutMillis(TIMEOUT_MILLIS)
+                          .maxResponseLength(0)
+                          .build();
         settableHealth.setHealth(Health.up().build());
     }
 
@@ -150,6 +160,13 @@ public class ArmeriaSpringActuatorAutoConfigurationTest {
 
         final Map<String, Object> values = OBJECT_MAPPER.readValue(res.content().array(), JSON_MAP);
         assertThat(values).containsEntry("status", "DOWN");
+    }
+
+    @Test
+    public void testOptions() throws Exception {
+        final AggregatedHttpResponse res = client.options("/internal/actuator/health").aggregate().get();
+        // CORS not enabled by default.
+        assertThat(res.status()).isEqualTo(HttpStatus.METHOD_NOT_ALLOWED);
     }
 
     @Test
@@ -185,11 +202,7 @@ public class ArmeriaSpringActuatorAutoConfigurationTest {
     }
 
     @Test
-    public void testHeapdump() throws Exception {
-        final HttpClient client = Clients.newDerivedClient(this.client, options -> {
-            return new ClientOptionsBuilder(options).maxResponseLength(0).build();
-        });
-
+    public void testHeapDump() throws Exception {
         final HttpResponse res = client.get("/internal/actuator/heapdump");
         final AtomicLong remainingBytes = new AtomicLong();
         StepVerifier.create(res)
@@ -200,7 +213,7 @@ public class ArmeriaSpringActuatorAutoConfigurationTest {
                         assertThat(headers.contentType()).isEqualTo(MediaType.OCTET_STREAM);
                         assertThat(headers.get(HttpHeaderNames.CONTENT_DISPOSITION))
                                 .startsWith("attachment;filename=heapdump");
-                        final Long contentLength = headers.getLong(HttpHeaderNames.CONTENT_LENGTH);
+                        final long contentLength = headers.getLong(HttpHeaderNames.CONTENT_LENGTH, -1);
                         assertThat(contentLength).isPositive();
                         remainingBytes.set(contentLength);
                     })
@@ -245,5 +258,51 @@ public class ArmeriaSpringActuatorAutoConfigurationTest {
                                OBJECT_MAPPER.writeValueAsBytes(ImmutableMap.of("configuredLevel", "info")))
                       .aggregate().get();
         assertThat(res.status()).isEqualTo(HttpStatus.UNSUPPORTED_MEDIA_TYPE);
+    }
+
+    @RunWith(SpringRunner.class)
+    @SpringBootTest(classes = org.springframework.boot.test.context.TestConfiguration.class)
+    @ActiveProfiles({ "local", "autoConfTest", "autoConfTestCors" })
+    @DirtiesContext
+    @EnableAutoConfiguration
+    @ImportAutoConfiguration(ArmeriaSpringActuatorAutoConfiguration.class)
+    public static class ArmeriaSpringActuatorAutoConfigurationCorsTest {
+
+        @SpringBootApplication
+        public static class TestConfiguration {}
+
+        @Rule
+        public TestRule globalTimeout = new DisableOnDebug(new Timeout(10, TimeUnit.SECONDS));
+
+        @Inject
+        private Server server;
+
+        private WebClient client;
+
+        @Before
+        public void setUp() {
+            client = WebClient.of(newUrl("h2c"));
+        }
+
+        private String newUrl(String scheme) {
+            final int port = server.activeLocalPort();
+            return scheme + "://127.0.0.1:" + port;
+        }
+
+        @Test
+        public void testOptions() {
+            final HttpRequest req = HttpRequest.of(RequestHeaders.of(
+                    HttpMethod.OPTIONS, "/internal/actuator/health",
+                    HttpHeaderNames.ORIGIN, "https://example.com",
+                    HttpHeaderNames.ACCESS_CONTROL_REQUEST_METHOD, "GET"));
+            final AggregatedHttpResponse res = client.execute(req).aggregate().join();
+            assertThat(res.status()).isEqualTo(HttpStatus.OK);
+            assertThat(res.headers().get(HttpHeaderNames.ACCESS_CONTROL_ALLOW_ORIGIN))
+                    .isEqualTo("https://example.com");
+            assertThat(res.headers().get(HttpHeaderNames.ACCESS_CONTROL_ALLOW_METHODS))
+                    .isEqualTo("GET,POST");
+            assertThat(res.headers().contains(HttpHeaderNames.ACCESS_CONTROL_MAX_AGE)).isTrue();
+            assertThat(res.status()).isNotEqualTo(HttpStatus.METHOD_NOT_ALLOWED);
+        }
     }
 }

@@ -65,6 +65,8 @@ public abstract class AbstractRequestContextBuilder {
     @Nullable
     private final RpcRequest rpcReq;
     private SessionProtocol sessionProtocol;
+    @Nullable
+    private RequestId id;
     private HttpMethod method;
     private final String authority;
     private final String path;
@@ -431,6 +433,25 @@ public abstract class AbstractRequestContextBuilder {
      */
     protected final String path() {
         return path;
+    }
+
+    /**
+     * Sets the {@link RequestId}.
+     * If not set, a random {@link RequestId} is generated with {@link RequestId#random()}.
+     */
+    public AbstractRequestContextBuilder id(RequestId id) {
+        this.id = requireNonNull(id, "id");
+        return this;
+    }
+
+    /**
+     * Returns the {@link RequestId}.
+     */
+    protected final RequestId id() {
+        if (id == null) {
+            id = RequestId.random();
+        }
+        return id;
     }
 
     /**

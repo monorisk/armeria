@@ -39,7 +39,7 @@ import com.google.common.collect.ImmutableList;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.Descriptors.ServiceDescriptor;
 
-import com.linecorp.armeria.client.HttpClient;
+import com.linecorp.armeria.client.WebClient;
 import com.linecorp.armeria.common.AggregatedHttpResponse;
 import com.linecorp.armeria.common.HttpStatus;
 import com.linecorp.armeria.common.MediaType;
@@ -51,9 +51,9 @@ import com.linecorp.armeria.grpc.testing.ReconnectServiceGrpc.ReconnectServiceIm
 import com.linecorp.armeria.grpc.testing.TestServiceGrpc;
 import com.linecorp.armeria.grpc.testing.TestServiceGrpc.TestServiceImplBase;
 import com.linecorp.armeria.server.ServerBuilder;
-import com.linecorp.armeria.server.docs.DocServiceBuilder;
+import com.linecorp.armeria.server.docs.DocService;
 import com.linecorp.armeria.server.docs.DocServiceFilter;
-import com.linecorp.armeria.server.docs.EndpointInfoBuilder;
+import com.linecorp.armeria.server.docs.EndpointInfo;
 import com.linecorp.armeria.server.docs.ServiceSpecification;
 import com.linecorp.armeria.server.grpc.GrpcDocServicePlugin.ServiceEntry;
 import com.linecorp.armeria.server.logging.LoggingService;
@@ -110,25 +110,27 @@ public class GrpcDocServiceTest {
                                        .supportedSerializationFormats(GrpcSerializationFormats.values())
                                        .enableUnframedRequests(true)
                                        .build());
-            sb.serviceUnder(
-                    "/docs/",
-                    new DocServiceBuilder()
-                            .exampleRequestForMethod(
-                                    TestServiceGrpc.SERVICE_NAME,
-                                    "UnaryCall",
-                                    SimpleRequest.newBuilder()
-                                                 .setPayload(
-                                                         Payload.newBuilder()
-                                                                .setBody(ByteString.copyFromUtf8("world")))
-                                                 .build())
-                            .injectedScript(INJECTED_HEADER_PROVIDER1, INJECTED_HEADER_PROVIDER2)
-                            .injectedScriptSupplier((ctx, req) -> INJECTED_HEADER_PROVIDER3)
-                            .exclude(DocServiceFilter.ofMethodName(TestServiceGrpc.SERVICE_NAME, "EmptyCall"))
-                            .build()
-                            .decorate(LoggingService.newDecorator()));
-            sb.serviceUnder("/excludeAll/", new DocServiceBuilder()
-                    .exclude(DocServiceFilter.ofGrpc())
-                    .build());
+            sb.serviceUnder("/docs/",
+                            DocService.builder()
+                                      .exampleRequestForMethod(
+                                            TestServiceGrpc.SERVICE_NAME,
+                                            "UnaryCall",
+                                            SimpleRequest.newBuilder()
+                                                         .setPayload(
+                                                             Payload.newBuilder()
+                                                                    .setBody(ByteString.copyFromUtf8("world")))
+                                                         .build())
+                                      .injectedScript(INJECTED_HEADER_PROVIDER1, INJECTED_HEADER_PROVIDER2)
+                                      .injectedScriptSupplier((ctx, req) -> INJECTED_HEADER_PROVIDER3)
+                                      .exclude(DocServiceFilter.ofMethodName(
+                                                        TestServiceGrpc.SERVICE_NAME,
+                                                        "EmptyCall"))
+                                      .build()
+                                      .decorate(LoggingService.newDecorator()));
+            sb.serviceUnder("/excludeAll/",
+                            DocService.builder()
+                                      .exclude(DocServiceFilter.ofGrpc())
+                                      .build());
             sb.serviceUnder("/",
                             GrpcService.builder()
                                        .addService(mock(ReconnectServiceImplBase.class))
@@ -143,19 +145,19 @@ public class GrpcDocServiceTest {
         }
         final List<ServiceEntry> entries = ImmutableList.of(
                 new ServiceEntry(TEST_SERVICE_DESCRIPTOR, ImmutableList.of(
-                        new EndpointInfoBuilder("*", "/test/armeria.grpc.testing.TestService/")
-                                .availableMimeTypes(GrpcSerializationFormats.PROTO.mediaType(),
-                                                    GrpcSerializationFormats.JSON.mediaType(),
-                                                    GrpcSerializationFormats.PROTO_WEB.mediaType(),
-                                                    GrpcSerializationFormats.JSON_WEB.mediaType(),
-                                                    MediaType.PROTOBUF.withParameter("protocol", "gRPC"),
-                                                    MediaType.JSON_UTF_8.withParameter("protocol", "gRPC"))
-                                .build())),
+                        EndpointInfo.builder("*", "/test/armeria.grpc.testing.TestService/")
+                                    .availableMimeTypes(GrpcSerializationFormats.PROTO.mediaType(),
+                                                        GrpcSerializationFormats.JSON.mediaType(),
+                                                        GrpcSerializationFormats.PROTO_WEB.mediaType(),
+                                                        GrpcSerializationFormats.JSON_WEB.mediaType(),
+                                                        MediaType.PROTOBUF.withParameter("protocol", "gRPC"),
+                                                        MediaType.JSON_UTF_8.withParameter("protocol", "gRPC"))
+                                    .build())),
                 new ServiceEntry(RECONNECT_SERVICE_DESCRIPTOR, ImmutableList.of(
-                        new EndpointInfoBuilder("*", "/armeria.grpc.testing.ReconnectService/")
-                                .availableFormats(GrpcSerializationFormats.PROTO,
-                                                  GrpcSerializationFormats.PROTO_WEB)
-                                .build())));
+                        EndpointInfo.builder("*", "/armeria.grpc.testing.ReconnectService/")
+                                    .availableFormats(GrpcSerializationFormats.PROTO,
+                                                      GrpcSerializationFormats.PROTO_WEB)
+                                    .build())));
         final JsonNode expectedJson = mapper.valueToTree(new GrpcDocServicePlugin().generate(
                 entries, unifyFilter((plugin, service, method) -> true,
                                      DocServiceFilter.ofMethodName(TestServiceGrpc.SERVICE_NAME,
@@ -165,7 +167,7 @@ public class GrpcDocServiceTest {
         // when building a DocService, so we add them manually here.
         addExamples(expectedJson);
 
-        final HttpClient client = HttpClient.of(server.uri("/"));
+        final WebClient client = WebClient.of(server.uri("/"));
         final AggregatedHttpResponse res = client.get("/docs/specification.json").aggregate().join();
         assertThat(res.status()).isSameAs(HttpStatus.OK);
 
@@ -186,7 +188,7 @@ public class GrpcDocServiceTest {
 
     @Test
     public void excludeAllServices() throws IOException {
-        final HttpClient client = HttpClient.of(server.uri("/"));
+        final WebClient client = WebClient.of(server.uri("/"));
         final AggregatedHttpResponse res = client.get("/excludeAll/specification.json").aggregate().join();
         assertThat(res.status()).isEqualTo(HttpStatus.OK);
         final JsonNode actualJson = mapper.readTree(res.contentUtf8());

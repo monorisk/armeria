@@ -4,8 +4,16 @@
   - Learn how to write an HTTP service using annotations.
   - See [Annotated services](https://line.github.io/armeria/server-annotated-service.html).
 
-- `grpc-service`
+- `grpc`
   - Learn how to write a gRPC service with Armeria gRPC module.
+  - See [Running a gRPC service](https://line.github.io/armeria/server-grpc.html) and
+    [Calling a gRPC service](https://line.github.io/armeria/client-grpc.html).
+
+- `grpc-service-reactor`
+  - Learn how to write a gRPC service with Armeria gRPC module,
+    [`reactive-grpc`](https://github.com/salesforce/reactive-grpc) and
+    [Project Reactor](https://projectreactor.io/) libraries for asynchronous processing
+    with non-blocking back pressure.
   - See [Running a gRPC service](https://line.github.io/armeria/server-grpc.html) and
     [Calling a gRPC service](https://line.github.io/armeria/client-grpc.html).
 
@@ -24,12 +32,19 @@
 - `spring-boot-minimal`
   - Learn how to use Armeria with the minimal Spring Boot dependencies.
 
+- `spring-boot-minimal-kotlin`
+  - Learn how to use Armeria with the minimal Spring Boot dependencies (Kotlin).
+
 - `spring-boot-tomcat`
   - Learn how to make Armeria serve your Spring Boot web application.
 
 - `spring-boot-webflux`
   - Learn how to make Armeria serve your Spring Boot reactive web application.
   - See [Using Armeria with Spring WebFlux](https://line.github.io/armeria/advanced-spring-webflux-integration.html).
+
+- `dropwizard`
+  - Learn how to make Armeria serve your Dropwizard web application.
+  - See [Using Armeria with Dropwizard](https://line.github.io/armeria/advanced-dropwizard-integration.html).
 
 - `static-files`
   - Learn how to serve static files.

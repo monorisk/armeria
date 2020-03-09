@@ -21,20 +21,17 @@ import static org.assertj.core.api.Assertions.assertThat;
 import org.junit.ClassRule;
 import org.junit.Test;
 
-import com.linecorp.armeria.client.ClientFactoryBuilder;
-import com.linecorp.armeria.client.HttpClient;
-import com.linecorp.armeria.client.HttpClientBuilder;
-import com.linecorp.armeria.client.logging.LoggingClientBuilder;
+import com.linecorp.armeria.client.ClientFactory;
+import com.linecorp.armeria.client.WebClient;
+import com.linecorp.armeria.client.logging.LoggingClient;
 import com.linecorp.armeria.common.HttpResponse;
 import com.linecorp.armeria.common.HttpStatus;
 import com.linecorp.armeria.server.ServerBuilder;
-import com.linecorp.armeria.server.logging.LoggingServiceBuilder;
+import com.linecorp.armeria.server.logging.LoggingService;
 import com.linecorp.armeria.testing.junit4.server.SelfSignedCertificateRule;
 import com.linecorp.armeria.testing.junit4.server.ServerRule;
 
 import io.netty.handler.ssl.ClientAuth;
-import io.netty.handler.ssl.SslContext;
-import io.netty.handler.ssl.SslContextBuilder;
 import io.netty.handler.ssl.util.InsecureTrustManagerFactory;
 
 public class ClientAuthIntegrationTest {
@@ -49,27 +46,29 @@ public class ClientAuthIntegrationTest {
     public static ServerRule rule = new ServerRule() {
         @Override
         protected void configure(ServerBuilder sb) throws Exception {
-            final SslContext sslContext =
-                    SslContextBuilder.forServer(serverCert.certificateFile(), serverCert.privateKeyFile())
-                                     .trustManager(InsecureTrustManagerFactory.INSTANCE)
-                                     .clientAuth(ClientAuth.REQUIRE)
-                                     .build();
-            sb.tls(sslContext)
-              .service("/", (ctx, req) -> HttpResponse.of("success"))
-              .decorator(new LoggingServiceBuilder().newDecorator());
+            sb.tls(serverCert.certificateFile(), serverCert.privateKeyFile());
+            sb.tlsCustomizer(sslCtxBuilder -> {
+                sslCtxBuilder.trustManager(InsecureTrustManagerFactory.INSTANCE)
+                             .clientAuth(ClientAuth.REQUIRE);
+            });
+
+            sb.service("/", (ctx, req) -> HttpResponse.of("success"));
+            sb.decorator(LoggingService.builder().newDecorator());
         }
     };
 
     @Test
     public void normal() {
-        final HttpClient client = new HttpClientBuilder(rule.httpsUri("/"))
-                .factory(new ClientFactoryBuilder()
-                                 .sslContextCustomizer(ctx -> ctx
-                                         .keyManager(clientCert.certificateFile(), clientCert.privateKeyFile())
-                                         .trustManager(InsecureTrustManagerFactory.INSTANCE))
-                                 .build())
-                .decorator(new LoggingClientBuilder().newDecorator())
-                .build();
+        final ClientFactory clientFactory =
+                ClientFactory.builder()
+                             .tlsCustomizer(ctx -> ctx.keyManager(clientCert.certificateFile(),
+                                                                  clientCert.privateKeyFile()))
+                             .tlsNoVerify()
+                             .build();
+        final WebClient client = WebClient.builder(rule.httpsUri("/"))
+                                          .factory(clientFactory)
+                                          .decorator(LoggingClient.builder().newDecorator())
+                                          .build();
         assertThat(client.get("/").aggregate().join().status()).isEqualTo(HttpStatus.OK);
     }
 }

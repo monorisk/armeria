@@ -60,9 +60,8 @@ import com.linecorp.armeria.server.ServiceRequestContext;
 import com.linecorp.armeria.server.VirtualHost;
 import com.linecorp.armeria.server.composition.AbstractCompositeService;
 import com.linecorp.armeria.server.file.AbstractHttpVfs;
+import com.linecorp.armeria.server.file.FileService;
 import com.linecorp.armeria.server.file.HttpFile;
-import com.linecorp.armeria.server.file.HttpFileBuilder;
-import com.linecorp.armeria.server.file.HttpFileService;
 
 /**
  * An {@link HttpService} that provides information about the {@link Service}s running in a
@@ -78,7 +77,8 @@ import com.linecorp.armeria.server.file.HttpFileService;
  * @see DocServiceBuilder#include(DocServiceFilter)
  * @see DocServiceBuilder#exclude(DocServiceFilter)
  */
-public class DocService extends AbstractCompositeService<HttpRequest, HttpResponse> {
+public class DocService extends AbstractCompositeService<HttpService, HttpRequest, HttpResponse>
+        implements HttpService {
 
     private static final int SPECIFICATION_INDEX = 0;
     private static final int VERSIONS_INDEX = 1;
@@ -88,6 +88,13 @@ public class DocService extends AbstractCompositeService<HttpRequest, HttpRespon
 
     static final List<DocServicePlugin> plugins = Streams.stream(ServiceLoader.load(
             DocServicePlugin.class, DocService.class.getClassLoader())).collect(toImmutableList());
+
+    /**
+     * Returns a new {@link DocServiceBuilder}.
+     */
+    public static DocServiceBuilder builder() {
+        return new DocServiceBuilder();
+    }
 
     private final Map<String, ListMultimap<String, HttpHeaders>> exampleHttpHeaders;
     private final Map<String, ListMultimap<String, String>> exampleRequests;
@@ -111,15 +118,15 @@ public class DocService extends AbstractCompositeService<HttpRequest, HttpRespon
                List<BiFunction<ServiceRequestContext, HttpRequest, String>> injectedScriptSuppliers,
                DocServiceFilter filter) {
 
-        super(ofExact("/specification.json", HttpFileService.forVfs(new DocServiceVfs())),
-              ofExact("/versions.json", HttpFileService.forVfs(new DocServiceVfs())),
+        super(ofExact("/specification.json", FileService.of(new DocServiceVfs())),
+              ofExact("/versions.json", FileService.of(new DocServiceVfs())),
               ofExact("/injected.js",
                       (ctx, req) -> HttpResponse.of(MediaType.JAVASCRIPT_UTF_8,
                                                     injectedScriptSuppliers.stream()
                                                                            .map(f -> f.apply(ctx, req))
                                                                            .collect(Collectors.joining("\n")))),
-              ofCatchAll(HttpFileService.forClassPath(DocService.class.getClassLoader(),
-                                                      "com/linecorp/armeria/server/docs")));
+              ofCatchAll(FileService.of(DocService.class.getClassLoader(),
+                                        "com/linecorp/armeria/server/docs")));
         this.exampleHttpHeaders = immutableCopyOf(exampleHttpHeaders, "exampleHttpHeaders");
         this.exampleRequests = immutableCopyOf(exampleRequests, "exampleRequests");
         this.filter = requireNonNull(filter, "filter");
@@ -320,7 +327,7 @@ public class DocService extends AbstractCompositeService<HttpRequest, HttpRespon
     }
 
     private DocServiceVfs vfs(int index) {
-        return (DocServiceVfs) ((HttpFileService) serviceAt(index)).config().vfs();
+        return (DocServiceVfs) ((FileService) serviceAt(index)).config().vfs();
     }
 
     private static Set<ServiceConfig> findSupportedServices(
@@ -357,10 +364,10 @@ public class DocService extends AbstractCompositeService<HttpRequest, HttpRespon
 
         void setContent(byte[] content, MediaType mediaType) {
             assert file == HttpFile.nonExistent();
-            file = HttpFileBuilder.of(HttpData.wrap(content))
-                                  .contentType(mediaType)
-                                  .cacheControl(ServerCacheControl.REVALIDATED)
-                                  .build();
+            file = HttpFile.builder(HttpData.wrap(content))
+                           .contentType(mediaType)
+                           .cacheControl(ServerCacheControl.REVALIDATED)
+                           .build();
         }
     }
 }

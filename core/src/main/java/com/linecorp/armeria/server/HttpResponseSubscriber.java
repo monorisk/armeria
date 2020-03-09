@@ -20,8 +20,6 @@ import static com.linecorp.armeria.internal.ArmeriaHttpUtil.isTrailerBlacklisted
 
 import java.nio.channels.ClosedChannelException;
 import java.util.Set;
-import java.util.concurrent.ScheduledFuture;
-import java.util.concurrent.TimeUnit;
 
 import javax.annotation.Nullable;
 
@@ -45,9 +43,12 @@ import com.linecorp.armeria.common.ResponseHeaders;
 import com.linecorp.armeria.common.ResponseHeadersBuilder;
 import com.linecorp.armeria.common.logging.RequestLogAvailability;
 import com.linecorp.armeria.common.logging.RequestLogBuilder;
-import com.linecorp.armeria.common.stream.AbortedStreamException;
+import com.linecorp.armeria.common.util.Exceptions;
+import com.linecorp.armeria.common.util.Version;
+import com.linecorp.armeria.internal.DefaultTimeoutController;
 import com.linecorp.armeria.internal.Http1ObjectEncoder;
 import com.linecorp.armeria.internal.HttpObjectEncoder;
+import com.linecorp.armeria.internal.HttpTimestampSupplier;
 
 import io.netty.channel.ChannelFuture;
 import io.netty.channel.ChannelHandlerContext;
@@ -55,7 +56,7 @@ import io.netty.handler.codec.http2.Http2Error;
 import io.netty.util.AsciiString;
 import io.netty.util.ReferenceCountUtil;
 
-final class HttpResponseSubscriber implements Subscriber<HttpObject>, RequestTimeoutChangeListener {
+final class HttpResponseSubscriber extends DefaultTimeoutController implements Subscriber<HttpObject> {
 
     private static final Logger logger = LoggerFactory.getLogger(HttpResponseSubscriber.class);
 
@@ -67,6 +68,10 @@ final class HttpResponseSubscriber implements Subscriber<HttpObject>, RequestTim
     private static final Set<AsciiString> ADDITIONAL_HEADER_BLACKLIST = ImmutableSet.of(
             HttpHeaderNames.SCHEME, HttpHeaderNames.STATUS, HttpHeaderNames.METHOD, HttpHeaderNames.PATH);
 
+    private static final String SERVER_HEADER =
+            "Armeria/" + Version.identify(HttpResponseSubscriber.class.getClassLoader()).get("armeria")
+                                .artifactVersion();
+
     enum State {
         NEEDS_HEADERS,
         NEEDS_DATA_OR_TRAILERS,
@@ -77,27 +82,30 @@ final class HttpResponseSubscriber implements Subscriber<HttpObject>, RequestTim
     private final HttpObjectEncoder responseEncoder;
     private final DecodedHttpRequest req;
     private final DefaultServiceRequestContext reqCtx;
-    private final long startTimeNanos;
+    private final boolean enableServerHeader;
+    private final boolean enableDateHeader;
 
     @Nullable
     private Subscription subscription;
-    @Nullable
-    private ScheduledFuture<?> timeoutFuture;
     private State state = State.NEEDS_HEADERS;
     private boolean isComplete;
 
     private boolean loggedResponseHeadersFirstBytesTransferred;
 
     HttpResponseSubscriber(ChannelHandlerContext ctx, HttpObjectEncoder responseEncoder,
-                           DefaultServiceRequestContext reqCtx, DecodedHttpRequest req) {
+                           DefaultServiceRequestContext reqCtx, DecodedHttpRequest req,
+                           boolean enableServerHeader, boolean enableDateHeader) {
+        super(ctx.channel().eventLoop());
         this.ctx = ctx;
         this.responseEncoder = responseEncoder;
         this.req = req;
         this.reqCtx = reqCtx;
-        startTimeNanos = System.nanoTime();
+        this.enableServerHeader = enableServerHeader;
+        this.enableDateHeader = enableDateHeader;
+        setTimeoutTask(newTimeoutTask());
     }
 
-    private Service<?, ?> service() {
+    private HttpService service() {
         return reqCtx.service();
     }
 
@@ -106,45 +114,12 @@ final class HttpResponseSubscriber implements Subscriber<HttpObject>, RequestTim
     }
 
     @Override
-    public void onRequestTimeoutChange(long newRequestTimeoutMillis) {
-        // Cancel the previously scheduled timeout, if exists.
-        cancelTimeout();
-
-        if (newRequestTimeoutMillis > 0 && state != State.DONE) {
-            // Calculate the amount of time passed since the creation of this subscriber.
-            final long passedTimeMillis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startTimeNanos);
-
-            if (passedTimeMillis < newRequestTimeoutMillis) {
-                timeoutFuture = ctx.channel().eventLoop().schedule(
-                        this::onTimeout,
-                        newRequestTimeoutMillis - passedTimeMillis, TimeUnit.MILLISECONDS);
-            } else {
-                // We went past the dead line set by the new timeout already.
-                onTimeout();
-            }
-        }
-    }
-
-    private void onTimeout() {
-        if (state != State.DONE) {
-            reqCtx.setTimedOut();
-            final Runnable requestTimeoutHandler = reqCtx.requestTimeoutHandler();
-            if (requestTimeoutHandler != null) {
-                requestTimeoutHandler.run();
-            } else {
-                failAndRespond(RequestTimeoutException.get(),
-                               SERVICE_UNAVAILABLE_MESSAGE, Http2Error.INTERNAL_ERROR);
-            }
-        }
-    }
-
-    @Override
     public void onSubscribe(Subscription subscription) {
         assert this.subscription == null;
         this.subscription = subscription;
 
         // Schedule the initial request timeout.
-        onRequestTimeoutChange(reqCtx.requestTimeoutMillis());
+        initTimeout(reqCtx.requestTimeoutMillis());
 
         // Start consuming.
         subscription.request(1);
@@ -198,6 +173,14 @@ final class HttpResponseSubscriber implements Subscriber<HttpObject>, RequestTim
                     // prevent the trailers from being sent so we go ahead and remove content-length to force
                     // chunked encoding.
                     newHeaders.remove(HttpHeaderNames.CONTENT_LENGTH);
+                }
+
+                if (enableServerHeader && !newHeaders.contains(HttpHeaderNames.SERVER)) {
+                    newHeaders.add(HttpHeaderNames.SERVER, SERVER_HEADER);
+                }
+
+                if (enableDateHeader && !newHeaders.contains(HttpHeaderNames.DATE)) {
+                    newHeaders.add(HttpHeaderNames.DATE, HttpTimestampSupplier.currentTime());
                 }
 
                 headers = newHeaders.build();
@@ -263,11 +246,8 @@ final class HttpResponseSubscriber implements Subscriber<HttpObject>, RequestTim
             failAndRespond(cause,
                            AggregatedHttpResponse.of(((HttpStatusException) cause).httpStatus()),
                            Http2Error.CANCEL);
-        } else if (cause instanceof AbortedStreamException) {
-            // One of the two cases:
-            // - Client closed the connection too early.
-            // - Response publisher aborted the stream.
-            failAndReset((AbortedStreamException) cause);
+        } else if (Exceptions.isStreamCancelling(cause)) {
+            failAndReset(cause);
         } else {
             logger.warn("{} Unexpected exception from a service or a response publisher: {}",
                         ctx.channel(), service(), cause);
@@ -394,7 +374,11 @@ final class HttpResponseSubscriber implements Subscriber<HttpObject>, RequestTim
                 future = responseEncoder.writeData(id, streamId, content, true);
             }
 
-            headersWriteFuture.addListener((ChannelFuture unused) -> maybeLogFirstResponseBytesTransferred());
+            headersWriteFuture.addListener((ChannelFuture f) -> {
+                if (f.isSuccess()) {
+                    maybeLogFirstResponseBytesTransferred();
+                }
+            });
         } else {
             // Wrote something already; we have to reset/cancel the stream.
             future = responseEncoder.writeReset(id, streamId, error);
@@ -403,7 +387,7 @@ final class HttpResponseSubscriber implements Subscriber<HttpObject>, RequestTim
         addCallbackAndFlush(cause, oldState, future);
     }
 
-    private void failAndReset(AbortedStreamException cause) {
+    private void failAndReset(Throwable cause) {
         final State oldState = setDone();
         subscription.cancel();
 
@@ -483,19 +467,32 @@ final class HttpResponseSubscriber implements Subscriber<HttpObject>, RequestTim
         return builder;
     }
 
-    private boolean cancelTimeout() {
-        final ScheduledFuture<?> timeoutFuture = this.timeoutFuture;
-        if (timeoutFuture == null) {
-            return true;
-        }
-
-        this.timeoutFuture = null;
-        return timeoutFuture.cancel(false);
-    }
-
     private IllegalStateException newIllegalStateException(String msg) {
         final IllegalStateException cause = new IllegalStateException(msg);
         failAndRespond(cause, INTERNAL_SERVER_ERROR_MESSAGE, Http2Error.INTERNAL_ERROR);
         return cause;
+    }
+
+    private TimeoutTask newTimeoutTask() {
+        return new TimeoutTask() {
+            @Override
+            public boolean canSchedule() {
+                return state != State.DONE;
+            }
+
+            @Override
+            public void run() {
+                if (state != State.DONE) {
+                    reqCtx.setTimedOut();
+                    final Runnable requestTimeoutHandler = reqCtx.requestTimeoutHandler();
+                    if (requestTimeoutHandler != null) {
+                        requestTimeoutHandler.run();
+                    } else {
+                        failAndRespond(RequestTimeoutException.get(),
+                                       SERVICE_UNAVAILABLE_MESSAGE, Http2Error.INTERNAL_ERROR);
+                    }
+                }
+            }
+        };
     }
 }

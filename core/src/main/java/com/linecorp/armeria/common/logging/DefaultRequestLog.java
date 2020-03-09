@@ -29,6 +29,7 @@ import static com.linecorp.armeria.common.logging.RequestLogAvailability.RESPONS
 import static com.linecorp.armeria.common.logging.RequestLogAvailability.RESPONSE_HEADERS;
 import static com.linecorp.armeria.common.logging.RequestLogAvailability.RESPONSE_START;
 import static com.linecorp.armeria.common.logging.RequestLogAvailability.SCHEME;
+import static com.linecorp.armeria.common.logging.RequestLogListenerInvoker.invokeOnRequestLog;
 import static java.util.Objects.requireNonNull;
 
 import java.util.ArrayList;
@@ -62,8 +63,6 @@ import com.linecorp.armeria.common.util.SystemInfo;
 import com.linecorp.armeria.common.util.TextFormatter;
 
 import io.netty.channel.Channel;
-import io.netty.util.Attribute;
-import io.netty.util.AttributeKey;
 
 /**
  * Default {@link RequestLog} implementation.
@@ -176,21 +175,6 @@ public class DefaultRequestLog implements RequestLog, RequestLogBuilder {
                                                              "requestContentPreviewerFactory");
         this.responseContentPreviewerFactory = requireNonNull(responseContentPreviewerFactory,
                                                               "responseContentPreviewerFactory");
-    }
-
-    @Override
-    public <T> Attribute<T> attr(AttributeKey<T> key) {
-        return ctx.attr(key);
-    }
-
-    @Override
-    public <T> boolean hasAttr(AttributeKey<T> key) {
-        return ctx.hasAttr(key);
-    }
-
-    @Override
-    public Iterator<Attribute<?>> attrs() {
-        return ctx.attrs();
     }
 
     @Override
@@ -343,7 +327,7 @@ public class DefaultRequestLog implements RequestLog, RequestLogBuilder {
 
         if (isAvailable(interestedFlags)) {
             // No need to add to 'listeners'.
-            RequestLogListenerInvoker.invokeOnRequestLog(listener, this);
+            invokeOnRequestLog(listener, this);
             return;
         }
 
@@ -353,7 +337,9 @@ public class DefaultRequestLog implements RequestLog, RequestLogBuilder {
             listeners.add(e);
             satisfiedListeners = removeSatisfiedListeners();
         }
-        notifyListeners(satisfiedListeners);
+        if (satisfiedListeners != null) {
+            invokeOnRequestLog(satisfiedListeners, this);
+        }
     }
 
     private static int getterFlags(RequestLogAvailability[] availabilities) {
@@ -995,7 +981,9 @@ public class DefaultRequestLog implements RequestLog, RequestLogBuilder {
                     synchronized (listeners) {
                         satisfiedListeners = removeSatisfiedListeners();
                     }
-                    notifyListeners(satisfiedListeners);
+                    if (satisfiedListeners != null) {
+                        invokeOnRequestLog(satisfiedListeners, this);
+                    }
                 }
                 break;
             }
@@ -1027,19 +1015,6 @@ public class DefaultRequestLog implements RequestLog, RequestLogBuilder {
         } while (i.hasNext());
 
         return satisfied;
-    }
-
-    private void notifyListeners(@Nullable RequestLogListener[] listeners) {
-        if (listeners == null) {
-            return;
-        }
-
-        for (RequestLogListener l : listeners) {
-            if (l == null) {
-                break;
-            }
-            RequestLogListenerInvoker.invokeOnRequestLog(l, this);
-        }
     }
 
     @Override

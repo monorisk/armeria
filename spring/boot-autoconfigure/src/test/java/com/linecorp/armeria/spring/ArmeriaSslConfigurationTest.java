@@ -39,8 +39,7 @@ import org.springframework.test.context.junit4.SpringRunner;
 import com.google.common.collect.ImmutableList;
 
 import com.linecorp.armeria.client.ClientFactory;
-import com.linecorp.armeria.client.ClientFactoryBuilder;
-import com.linecorp.armeria.client.HttpClient;
+import com.linecorp.armeria.client.WebClient;
 import com.linecorp.armeria.common.AggregatedHttpResponse;
 import com.linecorp.armeria.common.HttpRequest;
 import com.linecorp.armeria.common.HttpResponse;
@@ -54,8 +53,6 @@ import com.linecorp.armeria.server.ServiceRequestContext;
 import com.linecorp.armeria.server.logging.LoggingService;
 import com.linecorp.armeria.spring.ArmeriaAutoConfigurationTest.TestConfiguration;
 import com.linecorp.armeria.testing.internal.MockAddressResolverGroup;
-
-import io.netty.handler.ssl.util.InsecureTrustManagerFactory;
 
 /**
  * This uses {@link ArmeriaAutoConfiguration} for integration tests.
@@ -88,10 +85,10 @@ public class ArmeriaSslConfigurationTest {
     }
 
     private static final ClientFactory clientFactory =
-            new ClientFactoryBuilder()
-                    .sslContextCustomizer(b -> b.trustManager(InsecureTrustManagerFactory.INSTANCE))
-                    .addressResolverGroupFactory(eventLoopGroup -> MockAddressResolverGroup.localhost())
-                    .build();
+            ClientFactory.builder()
+                         .tlsNoVerify()
+                         .addressResolverGroupFactory(eventLoopGroup -> MockAddressResolverGroup.localhost())
+                         .build();
 
     @Rule
     public TestRule globalTimeout = new DisableOnDebug(new Timeout(10, TimeUnit.SECONDS));
@@ -110,9 +107,10 @@ public class ArmeriaSslConfigurationTest {
     }
 
     private void verify(SessionProtocol protocol) {
-        final HttpResponse response = HttpClient.of(clientFactory, newUrl(protocol)).get("/ok");
-
-        final AggregatedHttpResponse res = response.aggregate().join();
+        final AggregatedHttpResponse res = WebClient.builder(newUrl(protocol))
+                                                    .factory(clientFactory)
+                                                    .build()
+                                                    .get("/ok").aggregate().join();
         assertThat(res.status()).isEqualTo(HttpStatus.OK);
         assertThat(res.contentUtf8()).isEqualTo("ok");
     }

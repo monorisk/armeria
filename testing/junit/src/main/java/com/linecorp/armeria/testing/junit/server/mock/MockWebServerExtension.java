@@ -59,7 +59,7 @@ import com.linecorp.armeria.testing.junit.server.ServerExtension;
  * >
  * >   @Test
  * >   void checkSomething() {
- * >       HttpClient client = HttpClient.of(server.httpUri("/"));
+ * >       WebClient client = WebClient.of(server.httpUri("/"));
  * >
  * >       server.enqueue(AggregatedHttpResponse.of(HttpStatus.OK));
  * >       server.enqueue(AggregatedHttpResponse.of(HttpStatus.FORBIDDEN));
@@ -94,7 +94,7 @@ public class MockWebServerExtension extends ServerExtension implements BeforeTes
      */
     public MockWebServerExtension enqueue(AggregatedHttpResponse response) {
         requireNonNull(response, "response");
-        mockResponses.add(HttpResponse.of(response));
+        mockResponses.add(response.toHttpResponse());
         return this;
     }
 

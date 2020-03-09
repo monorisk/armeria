@@ -15,11 +15,12 @@
  */
 package com.linecorp.armeria.internal.spring;
 
-import static com.linecorp.armeria.internal.spring.ArmeriaConfigurationUtil.configureAnnotatedHttpServices;
+import static com.linecorp.armeria.internal.spring.ArmeriaConfigurationUtil.configureAnnotatedServices;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.reset;
 import static org.mockito.Mockito.spy;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 
 import java.util.function.Function;
@@ -28,18 +29,20 @@ import org.junit.Test;
 
 import com.google.common.collect.ImmutableList;
 
+import com.linecorp.armeria.common.HttpMethod;
 import com.linecorp.armeria.common.HttpRequest;
 import com.linecorp.armeria.common.HttpResponse;
 import com.linecorp.armeria.common.HttpStatus;
-import com.linecorp.armeria.internal.annotation.AnnotatedHttpService;
+import com.linecorp.armeria.internal.annotation.AnnotatedService;
+import com.linecorp.armeria.server.HttpService;
 import com.linecorp.armeria.server.Server;
 import com.linecorp.armeria.server.ServerBuilder;
-import com.linecorp.armeria.server.Service;
 import com.linecorp.armeria.server.ServiceRequestContext;
-import com.linecorp.armeria.server.SimpleDecoratingService;
+import com.linecorp.armeria.server.SimpleDecoratingHttpService;
 import com.linecorp.armeria.server.annotation.Get;
 import com.linecorp.armeria.server.annotation.Options;
 import com.linecorp.armeria.server.annotation.Path;
+import com.linecorp.armeria.server.docs.DocService;
 import com.linecorp.armeria.server.docs.DocServiceBuilder;
 import com.linecorp.armeria.server.metric.MetricCollectingService;
 import com.linecorp.armeria.spring.AnnotatedServiceRegistrationBean;
@@ -49,59 +52,64 @@ public class ArmeriaConfigurationUtilTest {
 
     @Test
     public void makesSureDecoratorsAreConfigured() {
-        final Function<Service<HttpRequest, HttpResponse>,
-                ? extends Service<HttpRequest, HttpResponse>> decorator = spy(new IdentityFunction());
+        final Function<? super HttpService, ? extends HttpService> decorator = spy(new IdentityFunction());
         final AnnotatedServiceRegistrationBean bean = new AnnotatedServiceRegistrationBean()
                 .setServiceName("test")
                 .setService(new SimpleService())
                 .setDecorators(decorator);
 
         final ServerBuilder sb1 = Server.builder();
-        final DocServiceBuilder dsb1 = new DocServiceBuilder();
-        configureAnnotatedHttpServices(sb1, dsb1, ImmutableList.of(bean),
+        final DocServiceBuilder dsb1 = DocService.builder();
+        configureAnnotatedServices(sb1, dsb1, ImmutableList.of(bean),
                                        MeterIdPrefixFunctionFactory.DEFAULT, null);
-        verify(decorator).apply(any());
-        assertThat(service(sb1).as(MetricCollectingService.class)).isPresent();
+        final Server s1 = sb1.build();
+        verify(decorator, times(2)).apply(any());
+        assertThat(service(s1).as(MetricCollectingService.class)).isPresent();
 
         reset(decorator);
 
         final ServerBuilder sb2 = Server.builder();
-        final DocServiceBuilder dsb2 = new DocServiceBuilder();
-        configureAnnotatedHttpServices(sb2, dsb2, ImmutableList.of(bean),
+        final DocServiceBuilder dsb2 = DocService.builder();
+        configureAnnotatedServices(sb2, dsb2, ImmutableList.of(bean),
                                        null, null);
-        verify(decorator).apply(any());
-        assertThat(service(sb2)).isInstanceOf(AnnotatedHttpService.class);
+        final Server s2 = sb2.build();
+        verify(decorator, times(2)).apply(any());
+        assertThat(getServiceForHttpMethod(sb2.build(), HttpMethod.OPTIONS))
+                .isInstanceOf(AnnotatedService.class);
     }
 
     @Test
     public void makesSureDecoratedServiceIsAdded() {
-        final Function<Service<HttpRequest, HttpResponse>,
-                ? extends Service<HttpRequest, HttpResponse>> decorator = spy(new DecoratingFunction());
+        final Function<? super HttpService, ? extends HttpService> decorator = spy(new DecoratingFunction());
         final AnnotatedServiceRegistrationBean bean = new AnnotatedServiceRegistrationBean()
                 .setServiceName("test")
                 .setService(new SimpleService())
                 .setDecorators(decorator);
 
         final ServerBuilder sb = Server.builder();
-        final DocServiceBuilder dsb = new DocServiceBuilder();
-        configureAnnotatedHttpServices(sb, dsb, ImmutableList.of(bean),
-                                       null, null);
-        verify(decorator).apply(any());
-        assertThat(service(sb).as(SimpleDecorator.class)).isPresent();
+        final DocServiceBuilder dsb = DocService.builder();
+        configureAnnotatedServices(sb, dsb, ImmutableList.of(bean), null, null);
+        final Server s = sb.build();
+        verify(decorator, times(2)).apply(any());
+        assertThat(service(s).as(SimpleDecorator.class)).isPresent();
     }
 
-    private static Service<?, ?> service(ServerBuilder sb) {
-        final Server server = sb.build();
+    private static HttpService service(Server server) {
         return server.config().defaultVirtualHost().serviceConfigs().get(0).service();
+    }
+
+    private static HttpService getServiceForHttpMethod(Server server, HttpMethod httpMethod) {
+        return server.serviceConfigs().stream()
+                     .filter(config -> config.route().methods().contains(httpMethod))
+                     .findFirst().get().service();
     }
 
     /**
      * A decorator function which is the same as {@link #identity()} but is not a final class.
      */
-    static class IdentityFunction
-            implements Function<Service<HttpRequest, HttpResponse>, Service<HttpRequest, HttpResponse>> {
+    static class IdentityFunction implements Function<HttpService, HttpService> {
         @Override
-        public Service<HttpRequest, HttpResponse> apply(Service<HttpRequest, HttpResponse> delegate) {
+        public HttpService apply(HttpService delegate) {
             return delegate;
         }
     }
@@ -109,17 +117,15 @@ public class ArmeriaConfigurationUtilTest {
     /**
      * A simple decorating function.
      */
-    static class DecoratingFunction
-            implements Function<Service<HttpRequest, HttpResponse>, Service<HttpRequest, HttpResponse>> {
+    static class DecoratingFunction implements Function<HttpService, HttpService> {
         @Override
-        public Service<HttpRequest, HttpResponse> apply(Service<HttpRequest, HttpResponse> delegate) {
+        public HttpService apply(HttpService delegate) {
             return new SimpleDecorator(delegate);
         }
     }
 
-    static class SimpleDecorator
-            extends SimpleDecoratingService<HttpRequest, HttpResponse> {
-        SimpleDecorator(Service<HttpRequest, HttpResponse> delegate) {
+    static class SimpleDecorator extends SimpleDecoratingHttpService {
+        SimpleDecorator(HttpService delegate) {
             super(delegate);
         }
 
@@ -135,7 +141,7 @@ public class ArmeriaConfigurationUtilTest {
     static class SimpleService {
         // We need to specify '@Options' annotation in order to avoid adding a decorator which denies
         // a CORS preflight request. If any decorator is added, the service will be automatically decorated
-        // with AnnotatedHttpService#ExceptionFilteredHttpResponseDecorator.
+        // with AnnotatedService#ExceptionFilteredHttpResponseDecorator.
         @Get
         @Options
         @Path("/")

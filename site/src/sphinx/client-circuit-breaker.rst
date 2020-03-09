@@ -64,38 +64,38 @@ A :api:`CircuitBreaker` can be one of the following three states:
 ``CircuitBreakerClient``
 ------------------------
 
-Armeria provides two different :api:`Client` implementations depending on the
+Armeria provides two different client implementations depending on the
 :api:`Request` and :api:`Response` types:
 
-- :api:`CircuitBreakerHttpClient`
+- :api:`CircuitBreakerClient`
 - :api:`CircuitBreakerRpcClient`
 
-Let's use :api:`CircuitBreakerHttpClient` to find out what we can do.
-You can use the ``decorator()`` method in :api:`ClientBuilder` to build a :api:`CircuitBreakerHttpClient`:
+Let's use :api:`CircuitBreakerClient` to find out what we can do.
+You can use the ``decorator()`` method in :api:`ClientBuilder` to build a :api:`CircuitBreakerClient`:
 
 .. code-block:: java
 
+    import com.linecorp.armeria.client.WebClient;
     import com.linecorp.armeria.client.circuitbreaker.CircuitBreaker;
-    import com.linecorp.armeria.client.circuitbreaker.CircuitBreakerHttpClient;
+    import com.linecorp.armeria.client.circuitbreaker.CircuitBreakerClient;
     import com.linecorp.armeria.client.circuitbreaker.CircuitBreakerStrategy;
-    import com.linecorp.armeria.client.HttpClientBuilder;
-    import com.linecorp.armeria.client.HttpClient;
     import com.linecorp.armeria.common.AggregatedHttpResponse;
     import com.linecorp.armeria.common.HttpRequest;
     import com.linecorp.armeria.common.HttpResponse;
 
-    final CircuitBreakerStrategy strategy = CircuitBreakerStrategy.onServerErrorStatus();
-    final HttpClient client = new HttpClientBuilder(...)
-            .decorator(CircuitBreakerHttpClient.builder(strategy)
-                                               .newDecorator())
+    CircuitBreakerStrategy strategy = CircuitBreakerStrategy.onServerErrorStatus();
+    WebClient client = WebClient
+            .builder(...)
+            .decorator(CircuitBreakerClient.builder(strategy)
+                                           .newDecorator())
             .build();
 
-    final AggregatedHttpResponse res = client.execute(...).aggregate().join(); // Send requests on and on.
+    AggregatedHttpResponse res = client.execute(...).aggregate().join(); // Send requests on and on.
 
-Now, the :api:`Client` can track the number of success or failure events depending on the :apiplural:`Response`.
-The :api:`CircuitBreaker` will enter ``OPEN``, when the number of failures divided by the total number of
-:apiplural:`Request` exceeds the failure rate. Then the :api:`Client` will immediately get
-:api:`FailFastException` by the :api:`CircuitBreaker`.
+Now, the :api:`WebClient` can track the number of success or failure events depending on the
+:apiplural:`Response`. The :api:`CircuitBreaker` will enter ``OPEN``, when the number of failures divided
+by the total number of :apiplural:`Request` exceeds the failure rate.
+Then the :api:`WebClient` will immediately get :api:`FailFastException` by the :api:`CircuitBreaker`.
 
 .. _circuit-breaker-strategy:
 
@@ -154,7 +154,7 @@ a failure.
 
 If you need to determine whether the request was successful by looking into the response content,
 you should implement :api:`CircuitBreakerStrategyWithContent` and specify it when you create an
-:api:`HttpClient` using :api:`CircuitBreakerHttpClientBuilder`:
+:api:`WebClient` using :api:`CircuitBreakerClientBuilder`:
 
 .. code-block:: java
 
@@ -190,12 +190,13 @@ you should implement :api:`CircuitBreakerStrategyWithContent` and specify it whe
                 }
             };
 
-    final HttpClient client = new HttpClientBuilder(...)
-            .decorator(CircuitBreakerHttpClient.builder(myStrategy) // Specify the strategy
-                                               .newDecorator())
+    WebClient client = WebClient
+            .builder(...)
+            .decorator(CircuitBreakerClient.builder(myStrategy) // Specify the strategy
+                                          .newDecorator())
             .build();
 
-    final AggregatedHttpResponse res = client.execute(...).aggregate().join();
+    AggregatedHttpResponse res = client.execute(...).aggregate().join();
 
 Grouping ``CircuitBreaker``\s
 -----------------------------
@@ -205,7 +206,7 @@ in many cases, you will want to use different :api:`CircuitBreaker` for differen
 might be an API which performs heavy calculation which fails often. On the other hand, there can be another API
 which is not resource hungry and this is not likely to fail.
 Having one :api:`CircuitBreaker` that tracks all the success and failure does not make sense in this scenario.
-It's even worse if the :api:`Client` connects to the services on different machines.
+It's even worse if the client connects to the services on different machines.
 When one of the remote services is down, your :api:`CircuitBreaker` will probably be ``OPEN`` state although
 you can connect to other services.
 Therefore, Armeria provides various ways that let users group the range of circuit breaker instances.
@@ -224,7 +225,7 @@ Therefore, Armeria provides various ways that let users group the range of circu
                 response -> response.completionFuture().handle((res, cause) -> cause == null);
 
         // Create CircuitBreakers per host (a.com, b.com ...)
-        CircuitBreakerHttpClient.newPerHostDecorator(factory, httpStrategy);
+        CircuitBreakerClient.newPerHostDecorator(factory, httpStrategy);
         CircuitBreakerRpcClient.newPerHostDecorator(factory, rpcStrategy);
         // The names of the created CircuitBreaker: my-cb-a.com, my-cb-b.com, ...
 
@@ -233,7 +234,7 @@ Therefore, Armeria provides various ways that let users group the range of circu
     .. code-block:: java
 
         // Create CircuitBreakers per method
-        CircuitBreakerHttpClient.newPerMethodDecorator(factory, httpStrategy);
+        CircuitBreakerClient.newPerMethodDecorator(factory, httpStrategy);
         // The names of the created CircuitBreaker: my-cb-GET, my-cb-POST, ...
 
         CircuitBreakerRpcClient.newPerMethodDecorator(factory, rpcStrategy);
@@ -244,7 +245,7 @@ Therefore, Armeria provides various ways that let users group the range of circu
     .. code-block:: java
 
         // Create CircuitBreakers per host and method
-        CircuitBreakerHttpClient.newPerHostAndMethodDecorator(factory, httpStrategy);
+        CircuitBreakerClient.newPerHostAndMethodDecorator(factory, httpStrategy);
         // The names of the created CircuitBreaker: my-cb-a.com#GET,
         // my-cb-a.com#POST, my-cb-b.com#GET, my-cb-b.com#POST, ...
 
@@ -264,7 +265,7 @@ If you want none of the above groupings, you can group them however you want usi
     final KeyedCircuitBreakerMapping<String> mapping =
             new KeyedCircuitBreakerMapping<>((ctx, req) -> ctx.path(), factory);
 
-    CircuitBreakerHttpClient.newDecorator(mapping, httpStrategy);
+    CircuitBreakerClient.newDecorator(mapping, httpStrategy);
 
 ``CircuitBreakerBuilder``
 -------------------------

@@ -26,7 +26,7 @@ import java.nio.ByteBuffer;
 import java.util.ArrayDeque;
 import java.util.Arrays;
 import java.util.Queue;
-import java.util.concurrent.ExecutorService;
+import java.util.concurrent.ScheduledExecutorService;
 import java.util.function.Consumer;
 import java.util.function.Function;
 
@@ -76,14 +76,14 @@ import io.netty.util.AsciiString;
  */
 public final class JettyService implements HttpService {
 
-    private static final Logger logger = LoggerFactory.getLogger(JettyService.class);
+    static final Logger logger = LoggerFactory.getLogger(JettyService.class);
 
     /**
      * Creates a new {@link JettyService} from an existing Jetty {@link Server}.
      *
      * @param jettyServer the Jetty {@link Server}
      */
-    public static JettyService forServer(Server jettyServer) {
+    public static JettyService of(Server jettyServer) {
         requireNonNull(jettyServer, "jettyServer");
         return new JettyService(null, blockingTaskExecutor -> jettyServer);
     }
@@ -91,60 +91,48 @@ public final class JettyService implements HttpService {
     /**
      * Creates a new {@link JettyService} from an existing Jetty {@link Server}.
      *
-     * @param hostname the default hostname
      * @param jettyServer the Jetty {@link Server}
+     * @param hostname the default hostname
      */
-    public static JettyService forServer(String hostname, Server jettyServer) {
-        requireNonNull(hostname, "hostname");
+    public static JettyService of(Server jettyServer, String hostname) {
         requireNonNull(jettyServer, "jettyServer");
+        requireNonNull(hostname, "hostname");
         return new JettyService(hostname, blockingTaskExecutor -> jettyServer);
     }
 
-    static JettyService forConfig(JettyServiceConfig config) {
-        final Function<ExecutorService, Server> serverFactory = blockingTaskExecutor -> {
-            final Server server = new Server(new ArmeriaThreadPool(blockingTaskExecutor));
-
-            config.dumpAfterStart().ifPresent(server::setDumpAfterStart);
-            config.dumpBeforeStop().ifPresent(server::setDumpBeforeStop);
-            config.stopTimeoutMillis().ifPresent(server::setStopTimeout);
-
-            config.handler().ifPresent(server::setHandler);
-            config.requestLog().ifPresent(server::setRequestLog);
-            config.sessionIdManagerFactory().ifPresent(
-                    factory -> server.setSessionIdManager(factory.apply(server)));
-
-            config.handlerWrappers().forEach(server::insertHandler);
-            config.attrs().forEach(server::setAttribute);
-            config.beans().forEach(bean -> {
-                final Boolean managed = bean.isManaged();
-                if (managed == null) {
-                    server.addBean(bean.bean());
-                } else {
-                    server.addBean(bean.bean(), managed);
-                }
-            });
-
-            config.eventListeners().forEach(server::addEventListener);
-            config.lifeCycleListeners().forEach(server::addLifeCycleListener);
-
-            config.configurators().forEach(c -> c.accept(server));
-
-            return server;
-        };
-
-        final Consumer<Server> postStopTask = server -> {
-            try {
-                logger.info("Destroying an embedded Jetty: {}", server);
-                server.destroy();
-            } catch (Exception e) {
-                logger.warn("Failed to destroy an embedded Jetty: {}", server, e);
-            }
-        };
-
-        return new JettyService(config.hostname().orElse(null), serverFactory, postStopTask);
+    /**
+     * Creates a new {@link JettyService} from an existing Jetty {@link Server}.
+     *
+     * @param jettyServer the Jetty {@link Server}
+     *
+     * @deprecated Use {@link #of(Server)}.
+     */
+    @Deprecated
+    public static JettyService forServer(Server jettyServer) {
+        return of(jettyServer);
     }
 
-    private final Function<ExecutorService, Server> serverFactory;
+    /**
+     * Creates a new {@link JettyService} from an existing Jetty {@link Server}.
+     *
+     * @param hostname the default hostname
+     * @param jettyServer the Jetty {@link Server}
+     *
+     * @deprecated Use {@link #of(Server, String)}.
+     */
+    @Deprecated
+    public static JettyService forServer(String hostname, Server jettyServer) {
+        return of(jettyServer, hostname);
+    }
+
+    /**
+     * Returns a new {@link JettyServiceBuilder}.
+     */
+    public static JettyServiceBuilder builder() {
+        return new JettyServiceBuilder();
+    }
+
+    private final Function<ScheduledExecutorService, Server> serverFactory;
     private final Consumer<Server> postStopTask;
     private final Configurator configurator;
 
@@ -158,13 +146,13 @@ public final class JettyService implements HttpService {
     private com.linecorp.armeria.server.Server armeriaServer;
     private boolean startedServer;
 
-    private JettyService(@Nullable String hostname, Function<ExecutorService, Server> serverSupplier) {
+    private JettyService(@Nullable String hostname, Function<ScheduledExecutorService, Server> serverSupplier) {
         this(hostname, serverSupplier, unused -> { /* unused */ });
     }
 
-    private JettyService(@Nullable String hostname,
-                         Function<ExecutorService, Server> serverFactory,
-                         Consumer<Server> postStopTask) {
+    JettyService(@Nullable String hostname,
+                 Function<ScheduledExecutorService, Server> serverFactory,
+                 Consumer<Server> postStopTask) {
 
         this.hostname = hostname;
         this.serverFactory = serverFactory;
@@ -194,10 +182,10 @@ public final class JettyService implements HttpService {
         try {
             assert armeriaServer != null;
             server = serverFactory.apply(armeriaServer.config().blockingTaskExecutor());
-            connector = new ArmeriaConnector(server);
+            connector = new ArmeriaConnector(server, armeriaServer);
             server.addConnector(connector);
 
-            if (!server.isStarted()) {
+            if (!server.isRunning()) {
                 logger.info("Starting an embedded Jetty: {}", server);
                 server.start();
                 startedServer = true;
@@ -242,7 +230,9 @@ public final class JettyService implements HttpService {
         req.aggregate().handle((aReq, cause) -> {
             if (cause != null) {
                 logger.warn("{} Failed to aggregate a request:", ctx, cause);
-                res.close(ResponseHeaders.of(HttpStatus.INTERNAL_SERVER_ERROR));
+                if (res.tryWrite(ResponseHeaders.of(HttpStatus.INTERNAL_SERVER_ERROR))) {
+                    res.close();
+                }
                 return null;
             }
 

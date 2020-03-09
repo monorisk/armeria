@@ -87,6 +87,8 @@ log4j2
       </Loggers>
     </Configuration>
 
+.. _customizing-log-format:
+
 Customizing a log format
 ------------------------
 
@@ -159,6 +161,9 @@ Tokens for the log format are listed in the following table.
 +---------------------------+-------------------+----------------------------------------------------+
 | ``%h``                    | No                | the remote hostname or IP address if DNS           |
 |                           |                   | hostname lookup is not available                   |
++---------------------------+-------------------+----------------------------------------------------+
+| ``%I``                    | No                | the request ID. Use ``%{short}I`` format string to |
+|                           |                   | get the short form.                                |
 +---------------------------+-------------------+----------------------------------------------------+
 | ``%l``                    | No                | the remote logname of the user                     |
 |                           |                   | (not supported yet, always write ``-``)            |

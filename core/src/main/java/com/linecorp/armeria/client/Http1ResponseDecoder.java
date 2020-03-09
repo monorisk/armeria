@@ -24,9 +24,7 @@ import org.slf4j.LoggerFactory;
 import com.linecorp.armeria.common.ClosedSessionException;
 import com.linecorp.armeria.common.ContentTooLargeException;
 import com.linecorp.armeria.common.HttpData;
-import com.linecorp.armeria.common.HttpRequest;
 import com.linecorp.armeria.common.ProtocolViolationException;
-import com.linecorp.armeria.common.logging.RequestLogBuilder;
 import com.linecorp.armeria.internal.ArmeriaHttpUtil;
 import com.linecorp.armeria.internal.InboundTrafficController;
 
@@ -68,14 +66,13 @@ final class Http1ResponseDecoder extends HttpResponseDecoder implements ChannelI
 
     @Override
     HttpResponseWrapper addResponse(
-            int id, @Nullable HttpRequest req, DecodedHttpResponse res, RequestLogBuilder logBuilder,
+            int id, DecodedHttpResponse res, @Nullable ClientRequestContext ctx, EventLoop eventLoop,
             long responseTimeoutMillis, long maxContentLength) {
 
         final HttpResponseWrapper resWrapper =
-                super.addResponse(id, req, res, logBuilder, responseTimeoutMillis, maxContentLength);
+                super.addResponse(id, res, ctx, eventLoop, responseTimeoutMillis, maxContentLength);
 
         resWrapper.completionFuture().handle((unused, cause) -> {
-            final EventLoop eventLoop = channel().eventLoop();
             if (eventLoop.inEventLoop()) {
                 onWrapperCompleted(resWrapper, cause);
             } else {
@@ -161,7 +158,7 @@ final class Http1ResponseDecoder extends HttpResponseDecoder implements ChannelI
                             state = State.NEED_DATA_OR_TRAILERS;
                         }
 
-                        res.scheduleTimeout(channel().eventLoop());
+                        res.initTimeout();
                         res.tryWrite(ArmeriaHttpUtil.toArmeria(nettyRes));
                     } else {
                         failWithUnexpectedMessageType(ctx, msg);

@@ -24,6 +24,9 @@ import org.openjdk.jmh.annotations.Setup;
 import org.openjdk.jmh.annotations.State;
 import org.openjdk.jmh.infra.Blackhole;
 
+/**
+ * Microbenchmarks for the {@link PathAndQuery#parse(String)} method.
+ */
 @State(Scope.Thread)
 public class PathParsingBenchmark {
 
@@ -32,7 +35,7 @@ public class PathParsingBenchmark {
 
     @Setup(Level.Invocation)
     @SuppressWarnings("RedundantStringConstructorCall")
-    public void setup() {
+    public void setUp() {
         // Create a new String for paths every time to avoid constant folding.
         path1 = new String("/armeria/services/hello-world");
         path2 = new String("/armeria/services/goodbye-world");

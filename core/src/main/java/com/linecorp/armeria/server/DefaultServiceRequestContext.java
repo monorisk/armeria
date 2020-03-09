@@ -16,45 +16,53 @@
 
 package com.linecorp.armeria.server;
 
+import static com.google.common.base.Preconditions.checkArgument;
 import static java.util.Objects.requireNonNull;
 
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.SocketAddress;
 import java.time.Duration;
+import java.time.Instant;
+import java.util.ArrayList;
 import java.util.Iterator;
+import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
-import java.util.concurrent.CancellationException;
-import java.util.concurrent.ExecutorService;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReferenceFieldUpdater;
+import java.util.function.BiConsumer;
 import java.util.function.Function;
 
 import javax.annotation.Nonnull;
 import javax.annotation.Nullable;
 import javax.net.ssl.SSLSession;
 
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import com.google.common.math.LongMath;
 
+import com.linecorp.armeria.client.ClientRequestContext;
 import com.linecorp.armeria.common.HttpHeaders;
 import com.linecorp.armeria.common.HttpHeadersBuilder;
 import com.linecorp.armeria.common.HttpRequest;
-import com.linecorp.armeria.common.HttpResponse;
 import com.linecorp.armeria.common.MediaType;
 import com.linecorp.armeria.common.NonWrappingRequestContext;
+import com.linecorp.armeria.common.Request;
+import com.linecorp.armeria.common.RequestId;
+import com.linecorp.armeria.common.Response;
 import com.linecorp.armeria.common.RpcRequest;
 import com.linecorp.armeria.common.SessionProtocol;
 import com.linecorp.armeria.common.logging.DefaultRequestLog;
 import com.linecorp.armeria.common.logging.RequestLog;
 import com.linecorp.armeria.common.logging.RequestLogBuilder;
+import com.linecorp.armeria.common.util.TimeoutController;
 import com.linecorp.armeria.server.logging.AccessLogWriter;
 
 import io.micrometer.core.instrument.MeterRegistry;
 import io.netty.buffer.ByteBufAllocator;
 import io.netty.channel.Channel;
 import io.netty.channel.EventLoop;
-import io.netty.util.Attribute;
+import io.netty.util.AttributeKey;
 
 /**
  * Default {@link ServiceRequestContext} implementation.
@@ -69,6 +77,11 @@ public class DefaultServiceRequestContext extends NonWrappingRequestContext impl
             additionalResponseTrailersUpdater = AtomicReferenceFieldUpdater.newUpdater(
             DefaultServiceRequestContext.class, HttpHeaders.class, "additionalResponseTrailers");
 
+    private boolean timedOut;
+
+    @Nullable
+    private List<BiConsumer<? super ServiceRequestContext, ? super ClientRequestContext>> onChildCallbacks;
+
     private final Channel ch;
     private final ServiceConfig cfg;
     private final RoutingContext routingContext;
@@ -76,15 +89,14 @@ public class DefaultServiceRequestContext extends NonWrappingRequestContext impl
     @Nullable
     private final SSLSession sslSession;
 
-    @Nullable
     private final ProxiedAddresses proxiedAddresses;
+
     private final InetAddress clientAddress;
 
     private final DefaultRequestLog log;
-    private final Logger logger;
 
     @Nullable
-    private ExecutorService blockingTaskExecutor;
+    private ScheduledExecutorService blockingTaskExecutor;
 
     private long requestTimeoutMillis;
     @Nullable
@@ -97,7 +109,7 @@ public class DefaultServiceRequestContext extends NonWrappingRequestContext impl
     private volatile HttpHeaders additionalResponseTrailers;
 
     @Nullable
-    private volatile RequestTimeoutChangeListener requestTimeoutChangeListener;
+    private volatile TimeoutController requestTimeoutController;
 
     @Nullable
     private String strVal;
@@ -109,19 +121,20 @@ public class DefaultServiceRequestContext extends NonWrappingRequestContext impl
      * @param ch the {@link Channel} that handles the invocation
      * @param meterRegistry the {@link MeterRegistry} that collects various stats
      * @param sessionProtocol the {@link SessionProtocol} of the invocation
+     * @param id the {@link RequestId} that represents the identifier of the current {@link Request}
+     *           and {@link Response} pair.
      * @param routingContext the parameters which are used when finding a matched {@link Route}
      * @param routingResult the result of finding a matched {@link Route}
      * @param request the request associated with this context
      * @param sslSession the {@link SSLSession} for this invocation if it is over TLS
-     * @param proxiedAddresses source and destination addresses retrieved from PROXY protocol header
+     * @param proxiedAddresses source and destination addresses delivered through proxy servers
      * @param clientAddress the address of a client who initiated the request
      */
     public DefaultServiceRequestContext(
             ServiceConfig cfg, Channel ch, MeterRegistry meterRegistry, SessionProtocol sessionProtocol,
-            RoutingContext routingContext, RoutingResult routingResult, HttpRequest request,
-            @Nullable SSLSession sslSession, @Nullable ProxiedAddresses proxiedAddresses,
-            InetAddress clientAddress) {
-        this(cfg, ch, meterRegistry, sessionProtocol, routingContext, routingResult, request,
+            RequestId id, RoutingContext routingContext, RoutingResult routingResult, HttpRequest request,
+            @Nullable SSLSession sslSession, ProxiedAddresses proxiedAddresses, InetAddress clientAddress) {
+        this(cfg, ch, meterRegistry, sessionProtocol, id, routingContext, routingResult, request,
              sslSession, proxiedAddresses, clientAddress, false, 0, 0);
     }
 
@@ -132,11 +145,13 @@ public class DefaultServiceRequestContext extends NonWrappingRequestContext impl
      * @param ch the {@link Channel} that handles the invocation
      * @param meterRegistry the {@link MeterRegistry} that collects various stats
      * @param sessionProtocol the {@link SessionProtocol} of the invocation
+     * @param id the {@link RequestId} that represents the identifier of the current {@link Request}
+     *           and {@link Response} pair.
      * @param routingContext the parameters which are used when finding a matched {@link Route}
      * @param routingResult the result of finding a matched {@link Route}
      * @param request the request associated with this context
      * @param sslSession the {@link SSLSession} for this invocation if it is over TLS
-     * @param proxiedAddresses source and destination addresses retrieved from PROXY protocol header
+     * @param proxiedAddresses source and destination addresses delivered through proxy servers
      * @param clientAddress the address of a client who initiated the request
      * @param requestStartTimeNanos {@link System#nanoTime()} value when the request started.
      * @param requestStartTimeMicros the number of microseconds since the epoch,
@@ -144,31 +159,32 @@ public class DefaultServiceRequestContext extends NonWrappingRequestContext impl
      */
     public DefaultServiceRequestContext(
             ServiceConfig cfg, Channel ch, MeterRegistry meterRegistry, SessionProtocol sessionProtocol,
-            RoutingContext routingContext, RoutingResult routingResult, HttpRequest request,
-            @Nullable SSLSession sslSession, @Nullable ProxiedAddresses proxiedAddresses,
-            InetAddress clientAddress, long requestStartTimeNanos, long requestStartTimeMicros) {
-        this(cfg, ch, meterRegistry, sessionProtocol, routingContext, routingResult, request,
-             sslSession, proxiedAddresses, clientAddress, true, requestStartTimeNanos, requestStartTimeMicros);
+            RequestId id, RoutingContext routingContext, RoutingResult routingResult, HttpRequest request,
+            @Nullable SSLSession sslSession, ProxiedAddresses proxiedAddresses, InetAddress clientAddress,
+            long requestStartTimeNanos, long requestStartTimeMicros) {
+        this(cfg, ch, meterRegistry, sessionProtocol, id, routingContext, routingResult, request,
+             sslSession, proxiedAddresses, clientAddress, true, requestStartTimeNanos,
+             requestStartTimeMicros);
     }
 
     private DefaultServiceRequestContext(
             ServiceConfig cfg, Channel ch, MeterRegistry meterRegistry, SessionProtocol sessionProtocol,
-            RoutingContext routingContext, RoutingResult routingResult, HttpRequest req,
-            @Nullable SSLSession sslSession, @Nullable ProxiedAddresses proxiedAddresses,
-            InetAddress clientAddress, boolean requestStartTimeSet, long requestStartTimeNanos,
+            RequestId id, RoutingContext routingContext, RoutingResult routingResult, HttpRequest req,
+            @Nullable SSLSession sslSession, ProxiedAddresses proxiedAddresses, InetAddress clientAddress,
+            boolean requestStartTimeSet, long requestStartTimeNanos,
             long requestStartTimeMicros) {
 
-        super(meterRegistry, sessionProtocol,
+        super(meterRegistry, sessionProtocol, id,
               requireNonNull(routingContext, "routingContext").method(), routingContext.path(),
               requireNonNull(routingResult, "routingResult").query(),
-              requireNonNull(req, "req"), null);
+              requireNonNull(req, "req"), null, null);
 
         this.ch = requireNonNull(ch, "ch");
         this.cfg = requireNonNull(cfg, "cfg");
         this.routingContext = routingContext;
         this.routingResult = routingResult;
         this.sslSession = sslSession;
-        this.proxiedAddresses = proxiedAddresses;
+        this.proxiedAddresses = requireNonNull(proxiedAddresses, "proxiedAddresses");
         this.clientAddress = requireNonNull(clientAddress, "clientAddress");
 
         log = new DefaultRequestLog(this, cfg.requestContentPreviewerFactory(),
@@ -185,22 +201,32 @@ public class DefaultServiceRequestContext extends NonWrappingRequestContext impl
         // now.
         log.requestFirstBytesTransferred();
 
-        logger = newLogger(cfg);
-
         requestTimeoutMillis = cfg.requestTimeoutMillis();
         maxRequestLength = cfg.maxRequestLength();
         additionalResponseHeaders = HttpHeaders.of();
         additionalResponseTrailers = HttpHeaders.of();
     }
 
-    private RequestContextAwareLogger newLogger(ServiceConfig cfg) {
-        String loggerName = cfg.loggerName().orElse(null);
-        if (loggerName == null) {
-            loggerName = cfg.route().loggerName();
+    @Override
+    public void onChild(BiConsumer<? super ServiceRequestContext, ? super ClientRequestContext> callback) {
+        requireNonNull(callback, "callback");
+        if (onChildCallbacks == null) {
+            onChildCallbacks = new ArrayList<>(4);
+        }
+        onChildCallbacks.add(callback);
+    }
+
+    @Override
+    public void invokeOnChildCallbacks(ClientRequestContext newCtx) {
+        final List<BiConsumer<? super ServiceRequestContext, ? super ClientRequestContext>> callbacks =
+                onChildCallbacks;
+        if (callbacks == null) {
+            return;
         }
 
-        return new RequestContextAwareLogger(this, LoggerFactory.getLogger(
-                cfg.server().config().serviceLoggerPrefix() + '.' + loggerName));
+        for (BiConsumer<? super ServiceRequestContext, ? super ClientRequestContext> callback : callbacks) {
+            callback.accept(this, newCtx);
+        }
     }
 
     @Nonnull
@@ -229,15 +255,17 @@ public class DefaultServiceRequestContext extends NonWrappingRequestContext impl
     }
 
     @Override
-    public ServiceRequestContext newDerivedContext(@Nullable HttpRequest req, @Nullable RpcRequest rpcReq) {
+    public ServiceRequestContext newDerivedContext(RequestId id,
+                                                   @Nullable HttpRequest req,
+                                                   @Nullable RpcRequest rpcReq) {
         requireNonNull(req, "req");
         if (rpcRequest() != null) {
             requireNonNull(rpcReq, "rpcReq");
         }
 
         final DefaultServiceRequestContext ctx = new DefaultServiceRequestContext(
-                cfg, ch, meterRegistry(), sessionProtocol(), routingContext,
-                routingResult, req, sslSession(), proxiedAddresses(), clientAddress);
+                cfg, ch, meterRegistry(), sessionProtocol(), id, routingContext,
+                routingResult, req, sslSession(), proxiedAddresses(), clientAddress());
 
         if (rpcReq != null) {
             ctx.updateRpcRequest(rpcReq);
@@ -253,16 +281,15 @@ public class DefaultServiceRequestContext extends NonWrappingRequestContext impl
             ctx.setAdditionalResponseTrailers(additionalTrailers);
         }
 
-        for (final Iterator<Attribute<?>> i = attrs(); i.hasNext();/* noop */) {
+        for (final Iterator<Entry<AttributeKey<?>, Object>> i = attrs(); i.hasNext();/* noop */) {
             ctx.addAttr(i.next());
         }
         return ctx;
     }
 
     @SuppressWarnings("unchecked")
-    private <T> void addAttr(Attribute<?> attribute) {
-        final Attribute<T> a = (Attribute<T>) attribute;
-        attr(a.key()).set(a.get());
+    private <T> void addAttr(Entry<AttributeKey<?>, Object> attribute) {
+        setAttr((AttributeKey<T>) attribute.getKey(), (T) attribute.getValue());
     }
 
     @Override
@@ -296,12 +323,12 @@ public class DefaultServiceRequestContext extends NonWrappingRequestContext impl
     }
 
     @Override
-    public <T extends Service<HttpRequest, HttpResponse>> T service() {
+    public HttpService service() {
         return cfg.service();
     }
 
     @Override
-    public ExecutorService blockingTaskExecutor() {
+    public ScheduledExecutorService blockingTaskExecutor() {
         if (blockingTaskExecutor != null) {
             return blockingTaskExecutor;
         }
@@ -330,11 +357,6 @@ public class DefaultServiceRequestContext extends NonWrappingRequestContext impl
         return ch.eventLoop();
     }
 
-    @Override
-    public Logger logger() {
-        return logger;
-    }
-
     @Nullable
     @Override
     public SSLSession sslSession() {
@@ -347,22 +369,33 @@ public class DefaultServiceRequestContext extends NonWrappingRequestContext impl
     }
 
     @Override
-    public void setRequestTimeoutMillis(long requestTimeoutMillis) {
-        if (requestTimeoutMillis < 0) {
-            throw new IllegalArgumentException(
-                    "requestTimeoutMillis: " + requestTimeoutMillis + " (expected: >= 0)");
+    public void clearRequestTimeout() {
+        if (requestTimeoutMillis == 0) {
+            return;
         }
-        if (this.requestTimeoutMillis != requestTimeoutMillis) {
-            this.requestTimeoutMillis = requestTimeoutMillis;
-            final RequestTimeoutChangeListener listener = requestTimeoutChangeListener;
-            if (listener != null) {
-                if (ch.eventLoop().inEventLoop()) {
-                    listener.onRequestTimeoutChange(requestTimeoutMillis);
-                } else {
-                    ch.eventLoop().execute(() -> listener.onRequestTimeoutChange(requestTimeoutMillis));
-                }
+
+        final TimeoutController requestTimeoutController = this.requestTimeoutController;
+        requestTimeoutMillis = 0;
+        if (requestTimeoutController != null) {
+            if (ch.eventLoop().inEventLoop()) {
+                requestTimeoutController.cancelTimeout();
+            } else {
+                ch.eventLoop().execute(requestTimeoutController::cancelTimeout);
             }
         }
+    }
+
+    @Override
+    public void setRequestTimeoutMillis(long requestTimeoutMillis) {
+        checkArgument(requestTimeoutMillis >= 0,
+                      "requestTimeoutMillis: " + requestTimeoutMillis + " (expected: >= 0)");
+        if (requestTimeoutMillis == 0) {
+            clearRequestTimeout();
+        }
+
+        final long adjustmentMillis =
+                LongMath.saturatedSubtract(requestTimeoutMillis, this.requestTimeoutMillis);
+        extendRequestTimeoutMillis(adjustmentMillis);
     }
 
     @Override
@@ -370,7 +403,74 @@ public class DefaultServiceRequestContext extends NonWrappingRequestContext impl
         setRequestTimeoutMillis(requireNonNull(requestTimeout, "requestTimeout").toMillis());
     }
 
+    @Override
+    public void extendRequestTimeoutMillis(long adjustmentMillis) {
+        if (adjustmentMillis == 0 || requestTimeoutMillis == 0) {
+            return;
+        }
+
+        final long oldRequestTimeoutMillis = requestTimeoutMillis;
+        requestTimeoutMillis = LongMath.saturatedAdd(oldRequestTimeoutMillis, adjustmentMillis);
+        final TimeoutController requestTimeoutController = this.requestTimeoutController;
+        if (requestTimeoutController != null) {
+            if (ch.eventLoop().inEventLoop()) {
+                requestTimeoutController.extendTimeout(adjustmentMillis);
+            } else {
+                ch.eventLoop().execute(() -> requestTimeoutController.extendTimeout(adjustmentMillis));
+            }
+        }
+    }
+
+    @Override
+    public void extendRequestTimeout(Duration adjustment) {
+        extendRequestTimeoutMillis(requireNonNull(adjustment, "adjustment").toMillis());
+    }
+
+    @Override
+    public void setRequestTimeoutAfterMillis(long requestTimeoutMillis) {
+        checkArgument(requestTimeoutMillis > 0,
+                      "requestTimeoutMillis: " + requestTimeoutMillis + " (expected: > 0)");
+
+        long passedTimeMillis = 0;
+        final TimeoutController requestTimeoutController = this.requestTimeoutController;
+        if (requestTimeoutController != null) {
+            passedTimeMillis = TimeUnit.NANOSECONDS.toMillis(
+                    System.nanoTime() - requestTimeoutController.startTimeNanos());
+            if (ch.eventLoop().inEventLoop()) {
+                requestTimeoutController.resetTimeout(requestTimeoutMillis);
+            } else {
+                ch.eventLoop().execute(() -> requestTimeoutController
+                        .resetTimeout(requestTimeoutMillis));
+            }
+        }
+
+        this.requestTimeoutMillis = LongMath.saturatedAdd(passedTimeMillis, requestTimeoutMillis);
+    }
+
+    @Override
+    public void setRequestTimeoutAfter(Duration requestTimeout) {
+        setRequestTimeoutAfterMillis(requireNonNull(requestTimeout, "requestTimeout").toMillis());
+    }
+
+    @Override
+    public void setRequestTimeoutAtMillis(long requestTimeoutAtMillis) {
+        checkArgument(requestTimeoutAtMillis >= 0,
+                      "requestTimeoutAtMillis: " + requestTimeoutAtMillis + " (expected: >= 0)");
+        final long nowMillis = Instant.now().toEpochMilli();
+        final long requestTimeoutAfter = requestTimeoutAtMillis - nowMillis;
+        checkArgument(requestTimeoutAfter > 0,
+                      "requestTimeoutAtMillis: %s (expected: > 'now=%s')", requestTimeoutAtMillis, nowMillis);
+
+        setRequestTimeoutAfterMillis(requestTimeoutAfter);
+    }
+
+    @Override
+    public void setRequestTimeoutAt(Instant requestTimeoutAt) {
+        setRequestTimeoutAtMillis(requireNonNull(requestTimeoutAt, "requestTimeoutAt").toEpochMilli());
+    }
+
     @Nullable
+    @Override
     public Runnable requestTimeoutHandler() {
         return requestTimeoutHandler;
     }
@@ -380,13 +480,16 @@ public class DefaultServiceRequestContext extends NonWrappingRequestContext impl
         this.requestTimeoutHandler = requireNonNull(requestTimeoutHandler, "requestTimeoutHandler");
     }
 
-    /**
-     * Marks this {@link ServiceRequestContext} as having been timed out. Any callbacks created with
-     * {@code makeContextAware} that are run after this will be failed with {@link CancellationException}.
-     */
     @Override
-    public void setTimedOut() {
-        super.setTimedOut();
+    public boolean isTimedOut() {
+        return timedOut;
+    }
+
+    /**
+     * Marks this {@link ServiceRequestContext} as having been timed out.
+     */
+    void setTimedOut() {
+        timedOut = true;
     }
 
     @Override
@@ -522,7 +625,6 @@ public class DefaultServiceRequestContext extends NonWrappingRequestContext impl
         return removeAdditionalResponseHeader(additionalResponseTrailersUpdater, name);
     }
 
-    @Nullable
     @Override
     public ProxiedAddresses proxiedAddresses() {
         return proxiedAddresses;
@@ -544,18 +646,18 @@ public class DefaultServiceRequestContext extends NonWrappingRequestContext impl
     }
 
     /**
-     * Sets the listener that is notified when the {@linkplain #requestTimeoutMillis()} request timeout} of
-     * the request is changed.
+     * Sets the {@code requestTimeoutController} that is set to a new timeout when
+     * the {@linkplain #requestTimeoutMillis()} request timeout} of the request is changed.
      *
      * <p>Note: This method is meant for internal use by server-side protocol implementation to reschedule
      * a timeout task when a user updates the request timeout configuration.
      */
-    public void setRequestTimeoutChangeListener(RequestTimeoutChangeListener listener) {
-        requireNonNull(listener, "listener");
-        if (requestTimeoutChangeListener != null) {
-            throw new IllegalStateException("requestTimeoutChangeListener is set already.");
+    public void setRequestTimeoutController(TimeoutController requestTimeoutController) {
+        requireNonNull(requestTimeoutController, "requestTimeoutController");
+        if (this.requestTimeoutController != null) {
+            throw new IllegalStateException("requestTimeoutController is set already.");
         }
-        requestTimeoutChangeListener = listener;
+        this.requestTimeoutController = requestTimeoutController;
     }
 
     @Override

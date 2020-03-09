@@ -88,16 +88,18 @@ import net.shibboleth.utilities.java.support.resolver.CriteriaSet;
 
 import com.google.common.collect.ImmutableMap;
 
-import com.linecorp.armeria.client.ClientOptions;
-import com.linecorp.armeria.client.HttpClient;
+import com.linecorp.armeria.client.WebClient;
 import com.linecorp.armeria.common.AggregatedHttpRequest;
 import com.linecorp.armeria.common.AggregatedHttpResponse;
+import com.linecorp.armeria.common.Cookie;
 import com.linecorp.armeria.common.HttpHeaderNames;
 import com.linecorp.armeria.common.HttpMethod;
 import com.linecorp.armeria.common.HttpRequest;
 import com.linecorp.armeria.common.HttpResponse;
 import com.linecorp.armeria.common.HttpStatus;
 import com.linecorp.armeria.common.MediaType;
+import com.linecorp.armeria.common.QueryParams;
+import com.linecorp.armeria.common.QueryParamsBuilder;
 import com.linecorp.armeria.common.RequestHeaders;
 import com.linecorp.armeria.server.ServerBuilder;
 import com.linecorp.armeria.server.ServiceRequestContext;
@@ -105,12 +107,6 @@ import com.linecorp.armeria.server.annotation.Get;
 import com.linecorp.armeria.server.auth.Authorizer;
 import com.linecorp.armeria.testing.junit4.server.ServerRule;
 
-import io.netty.handler.codec.http.QueryStringDecoder;
-import io.netty.handler.codec.http.QueryStringEncoder;
-import io.netty.handler.codec.http.cookie.Cookie;
-import io.netty.handler.codec.http.cookie.DefaultCookie;
-import io.netty.handler.codec.http.cookie.ServerCookieDecoder;
-import io.netty.handler.codec.http.cookie.ServerCookieEncoder;
 import io.netty.handler.ssl.util.SelfSignedCertificate;
 
 public class SamlServiceProviderTest {
@@ -172,37 +168,42 @@ public class SamlServiceProviderTest {
     public static ServerRule rule = new ServerRule() {
         @Override
         protected void configure(ServerBuilder sb) throws Exception {
-            final SamlServiceProvider sp = new SamlServiceProviderBuilder()
-                    // A request will be authenticated if it contains 'test=test' cookie in Cookie header.
-                    .authorizer(new CookieBasedAuthorizer("test", "test"))
-                    .ssoHandler(new CookieBasedSsoHandler("test", "test"))
-                    // My entity ID
-                    .entityId(spEntityId)
-                    .hostname(spHostname)
-                    //.scheme(SessionProtocol.HTTP)
-                    .credentialResolver(spCredentialResolver)
-                    .signatureAlgorithm(signatureAlgorithm)
-                    // Add a dummy IdP which supports HTTP-Post binding protocol for SSO.
-                    .idp()
-                    .entityId("http://idp.example.com/post")
-                    .ssoEndpoint(ofHttpPost("http://idp.example.com/saml/sso/post"))
-                    .sloResEndpoint(ofHttpPost("http://idp.example.com/saml/slo/post"))
-                    .and()
-                    // Add one more dummy IdP which supports HTTP-Redirect binding protocol for SSO.
-                    .idp()
-                    .entityId("http://idp.example.com/redirect")
-                    .ssoEndpoint(ofHttpRedirect("http://idp.example.com/saml/sso/redirect"))
-                    .sloResEndpoint(ofHttpRedirect("http://idp.example.com/saml/slo/redirect"))
-                    .and()
-                    // We have two IdP config so one of them will be selected by the path variable.
-                    .idpConfigSelector((configurator, ctx, req) -> {
-                        final String idpEntityId = "http://idp.example.com/" +
-                                                   ctx.pathParam("bindingProtocol");
+            final SamlIdentityProviderConfigSelector configSelector =
+                    (configurator, ctx, req) -> {
+                        final String idpEntityId = "http://idp.example.com/" + ctx.pathParam("bindingProtocol");
                         return CompletableFuture.completedFuture(
                                 configurator.idpConfigs().get(idpEntityId));
-                    })
-                    .requestIdManager(requestIdManager)
-                    .build();
+                    };
+            final SamlServiceProvider sp =
+                    SamlServiceProvider.builder()
+                                       // A request will be authenticated if it contains 'test=test'
+                                       // cookie in Cookie header.
+                                       .authorizer(new CookieBasedAuthorizer("test", "test"))
+                                       .ssoHandler(new CookieBasedSsoHandler("test", "test"))
+                                       // My entity ID
+                                       .entityId(spEntityId)
+                                       .hostname(spHostname)
+                                       //.scheme(SessionProtocol.HTTP)
+                                       .credentialResolver(spCredentialResolver)
+                                       .signatureAlgorithm(signatureAlgorithm)
+                                       // Add a dummy IdP which supports HTTP-Post binding protocol for SSO.
+                                       .idp()
+                                       .entityId("http://idp.example.com/post")
+                                       .ssoEndpoint(ofHttpPost("http://idp.example.com/saml/sso/post"))
+                                       .sloResEndpoint(ofHttpPost("http://idp.example.com/saml/slo/post"))
+                                       .and()
+                                       // Add one more dummy IdP which supports
+                                       // HTTP-Redirect binding protocol for SSO.
+                                       .idp()
+                                       .entityId("http://idp.example.com/redirect")
+                                       .ssoEndpoint(ofHttpRedirect("http://idp.example.com/saml/sso/redirect"))
+                                       .sloResEndpoint(ofHttpRedirect("http://idp.example.com/saml/slo/redirect"))
+                                       .and()
+                                       // We have two IdP config so one of them
+                                       // will be selected by the path variable.
+                                       .idpConfigSelector(configSelector)
+                                       .requestIdManager(requestIdManager)
+                                       .build();
 
             sb.service(sp.newSamlService())
               .annotatedService("/", new Object() {
@@ -231,7 +232,7 @@ public class SamlServiceProviderTest {
             }
 
             // Authentication will be succeeded only if both the specified cookie name and value are matched.
-            final Set<Cookie> cookies = ServerCookieDecoder.STRICT.decode(value);
+            final Set<Cookie> cookies = Cookie.fromCookieHeader(value);
             final boolean result = cookies.stream().anyMatch(
                     cookie -> cookieName.equals(cookie.name()) && cookieValue.equals(cookie.value()));
             return CompletableFuture.completedFuture(result);
@@ -245,11 +246,12 @@ public class SamlServiceProviderTest {
             requireNonNull(cookieName, "cookieName");
             requireNonNull(cookieValue, "cookieValue");
 
-            final Cookie cookie = new DefaultCookie(cookieName, cookieValue);
-            cookie.setDomain(spHostname);
-            cookie.setPath("/");
-            cookie.setHttpOnly(true);
-            setCookie = ServerCookieEncoder.STRICT.encode(cookie);
+            final Cookie cookie = Cookie.builder(cookieName, cookieValue)
+                                        .domain(spHostname)
+                                        .path("/")
+                                        .httpOnly(true)
+                                        .build();
+            setCookie = cookie.toSetCookieHeader();
         }
 
         @Override
@@ -298,7 +300,7 @@ public class SamlServiceProviderTest {
         }
     }
 
-    final HttpClient client = HttpClient.of(rule.uri("/"), ClientOptions.DEFAULT);
+    final WebClient client = WebClient.of(rule.uri("/"));
 
     @Test
     public void shouldRespondAuthnRequest_HttpRedirect() throws Exception {
@@ -313,8 +315,8 @@ public class SamlServiceProviderTest {
         assertThat(location).isNotNull();
         assertThat(p.matcher(location).matches()).isTrue();
 
-        final QueryStringDecoder decoder = new QueryStringDecoder(location, true);
-        assertThat(decoder.parameters().get(SIGNATURE_ALGORITHM).get(0)).isEqualTo(signatureAlgorithm);
+        assertThat(QueryParams.fromQueryString(location)
+                              .get(SIGNATURE_ALGORITHM)).isEqualTo(signatureAlgorithm);
     }
 
     @Test
@@ -530,26 +532,23 @@ public class SamlServiceProviderTest {
     private AggregatedHttpResponse sendViaHttpPostBindingProtocol(
             String path, String paramName, SignableSAMLObject signableObj) throws Exception {
         final String encoded = toSignedBase64(signableObj, idpCredential, signatureAlgorithm);
-        final QueryStringEncoder encoder = new QueryStringEncoder("/");
-        encoder.addParam(paramName, encoded);
-
         final HttpRequest req = HttpRequest.of(HttpMethod.POST, path, MediaType.FORM_DATA,
-                                               encoder.toUri().getRawQuery());
+                                               QueryParams.of(paramName, encoded).toQueryString());
         return client.execute(req).aggregate().join();
     }
 
     private AggregatedHttpResponse sendViaHttpRedirectBindingProtocol(
             String path, String paramName, SAMLObject samlObject) throws Exception {
 
-        final QueryStringEncoder encoder = new QueryStringEncoder("/");
-        encoder.addParam(paramName, toDeflatedBase64(samlObject));
-        encoder.addParam(SIGNATURE_ALGORITHM, signatureAlgorithm);
-        final String input = encoder.toUri().getRawQuery();
+        final QueryParamsBuilder params = QueryParams.builder();
+        params.add(paramName, toDeflatedBase64(samlObject));
+        params.add(SIGNATURE_ALGORITHM, signatureAlgorithm);
+        final String input = params.toQueryString();
         final String output = generateSignature(idpCredential, signatureAlgorithm, input);
-        encoder.addParam(SIGNATURE, output);
+        params.add(SIGNATURE, output);
 
         final HttpRequest req = HttpRequest.of(HttpMethod.POST, path, MediaType.FORM_DATA,
-                                               encoder.toUri().getRawQuery());
+                                               params.toQueryString());
         return client.execute(req).aggregate().join();
     }
 }

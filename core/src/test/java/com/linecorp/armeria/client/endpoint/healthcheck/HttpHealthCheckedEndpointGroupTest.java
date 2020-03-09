@@ -29,10 +29,9 @@ import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.EnumSource;
 
 import com.linecorp.armeria.client.ClientFactory;
-import com.linecorp.armeria.client.ClientFactoryBuilder;
-import com.linecorp.armeria.client.ClientOptionsBuilder;
+import com.linecorp.armeria.client.ClientOptions;
 import com.linecorp.armeria.client.Endpoint;
-import com.linecorp.armeria.client.endpoint.StaticEndpointGroup;
+import com.linecorp.armeria.client.endpoint.EndpointGroup;
 import com.linecorp.armeria.client.endpoint.dns.DnsAddressEndpointGroup;
 import com.linecorp.armeria.client.logging.LoggingClient;
 import com.linecorp.armeria.common.SessionProtocol;
@@ -43,7 +42,6 @@ import com.linecorp.armeria.server.healthcheck.HealthCheckService;
 import com.linecorp.armeria.testing.junit.server.ServerExtension;
 
 import io.micrometer.core.instrument.MeterRegistry;
-import io.netty.handler.ssl.util.InsecureTrustManagerFactory;
 
 class HttpHealthCheckedEndpointGroupTest {
 
@@ -72,10 +70,6 @@ class HttpHealthCheckedEndpointGroupTest {
     @RegisterExtension
     static final ServerExtension serverTwo = new HealthCheckServerExtension();
 
-    private final ClientFactory clientFactory = new ClientFactoryBuilder()
-            .sslContextCustomizer(s -> s.trustManager(InsecureTrustManagerFactory.INSTANCE))
-            .build();
-
     @ParameterizedTest
     @CsvSource({ "HTTP, false", "HTTP, true", "HTTPS, false", "HTTPS, true" })
     void endpoints(SessionProtocol protocol, boolean useGet) throws Exception {
@@ -86,8 +80,8 @@ class HttpHealthCheckedEndpointGroupTest {
         final int portTwo = serverTwo.port(protocol);
         try (HealthCheckedEndpointGroup endpointGroup = build(
                 HealthCheckedEndpointGroup.builder(
-                        new StaticEndpointGroup(Endpoint.of("127.0.0.1", portOne),
-                                                Endpoint.of("127.0.0.1", portTwo)),
+                        EndpointGroup.of(Endpoint.of("127.0.0.1", portOne),
+                                         Endpoint.of("127.0.0.1", portTwo)),
                         HEALTH_CHECK_PATH).useGet(useGet),
                 protocol)) {
 
@@ -135,13 +129,11 @@ class HttpHealthCheckedEndpointGroupTest {
         final int portTwo = serverTwo.port(protocol);
 
         try (HealthCheckedEndpointGroup groupFoo = build(
-                HealthCheckedEndpointGroup.builder(
-                        new StaticEndpointGroup(Endpoint.of("127.0.0.1", portOne)),
+                HealthCheckedEndpointGroup.builder(Endpoint.of("127.0.0.1", portOne),
                         HEALTH_CHECK_PATH),
                 protocol);
              HealthCheckedEndpointGroup groupBar = build(
-                     HealthCheckedEndpointGroup.builder(
-                             new StaticEndpointGroup(Endpoint.of("localhost", portTwo)),
+                     HealthCheckedEndpointGroup.builder(Endpoint.of("localhost", portTwo),
                              HEALTH_CHECK_PATH),
                      protocol)) {
 
@@ -167,8 +159,7 @@ class HttpHealthCheckedEndpointGroupTest {
         final int portOne = serverOne.port(protocol);
 
         try (HealthCheckedEndpointGroup endpointGroup = build(
-                HealthCheckedEndpointGroup.builder(
-                        new StaticEndpointGroup(Endpoint.of("127.0.0.1", 1)),
+                HealthCheckedEndpointGroup.builder(Endpoint.of("127.0.0.1", 1),
                         HEALTH_CHECK_PATH).port(portOne),
                 protocol)) {
             await().untilAsserted(() -> {
@@ -186,8 +177,8 @@ class HttpHealthCheckedEndpointGroupTest {
         final int portTwo = 1;
         try (HealthCheckedEndpointGroup endpointGroup = build(
                 HealthCheckedEndpointGroup.builder(
-                        new StaticEndpointGroup(Endpoint.of("127.0.0.1", portOne),
-                                                Endpoint.of("127.0.0.1", portTwo)),
+                        EndpointGroup.of(Endpoint.of("127.0.0.1", portOne),
+                                         Endpoint.of("127.0.0.1", portTwo)),
                         HEALTH_CHECK_PATH),
                 protocol)) {
 
@@ -217,9 +208,9 @@ class HttpHealthCheckedEndpointGroupTest {
         final int portOne = serverOne.port(protocol);
         try (HealthCheckedEndpointGroup endpointGroup = build(
                 HealthCheckedEndpointGroup.builder(
-                        new StaticEndpointGroup(Endpoint.of("127.0.0.1", portOne),
-                                                Endpoint.of("127.0.0.1", portOne),
-                                                Endpoint.of("127.0.0.1", portOne)),
+                        EndpointGroup.of(Endpoint.of("127.0.0.1", portOne),
+                                         Endpoint.of("127.0.0.1", portOne),
+                                         Endpoint.of("127.0.0.1", portOne)),
                         HEALTH_CHECK_PATH),
                 protocol)) {
 
@@ -256,7 +247,7 @@ class HttpHealthCheckedEndpointGroupTest {
         final int port = serverOne.port(protocol);
         try (HealthCheckedEndpointGroup endpointGroup = build(
                 HealthCheckedEndpointGroup.builder(
-                        new StaticEndpointGroup(Endpoint.of("foo", port).withIpAddr("127.0.0.1")),
+                        Endpoint.of("foo", port).withIpAddr("127.0.0.1"),
                         HEALTH_CHECK_PATH),
                 protocol)) {
 
@@ -300,11 +291,11 @@ class HttpHealthCheckedEndpointGroupTest {
         }
     }
 
-    private HealthCheckedEndpointGroup build(HealthCheckedEndpointGroupBuilder builder,
-                                             SessionProtocol protocol) {
+    private static HealthCheckedEndpointGroup build(HealthCheckedEndpointGroupBuilder builder,
+                                                    SessionProtocol protocol) {
         return builder.protocol(protocol)
-                      .clientFactory(clientFactory)
-                      .clientOptions(new ClientOptionsBuilder().decorator(LoggingClient.newDecorator()).build())
+                      .clientFactory(ClientFactory.insecure())
+                      .clientOptions(ClientOptions.builder().decorator(LoggingClient.newDecorator()).build())
                       .build();
     }
 }

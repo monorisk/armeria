@@ -61,10 +61,7 @@ public final class ClientConnectionTimings {
     @Nullable
     public static ClientConnectionTimings get(RequestContext ctx) {
         requireNonNull(ctx, "ctx");
-        if (ctx.hasAttr(TIMINGS)) {
-            return ctx.attr(TIMINGS).get();
-        }
-        return null;
+        return ctx.attr(TIMINGS);
     }
 
     /**
@@ -75,10 +72,14 @@ public final class ClientConnectionTimings {
     @Nullable
     public static ClientConnectionTimings get(RequestLog log) {
         requireNonNull(log, "log");
-        if (log.hasAttr(TIMINGS)) {
-            return log.attr(TIMINGS).get();
-        }
-        return null;
+        return get(log.context());
+    }
+
+    /**
+     * Returns a newly created {@link ClientConnectionTimingsBuilder}.
+     */
+    public static ClientConnectionTimingsBuilder builder() {
+        return new ClientConnectionTimingsBuilder();
     }
 
     ClientConnectionTimings(long connectionAcquisitionStartTimeMicros, long connectionAcquisitionDurationNanos,
@@ -103,7 +104,7 @@ public final class ClientConnectionTimings {
      */
     public void setTo(RequestContext ctx) {
         requireNonNull(ctx, "ctx");
-        ctx.attr(TIMINGS).set(this);
+        ctx.setAttr(TIMINGS, this);
     }
 
     /**
@@ -114,7 +115,7 @@ public final class ClientConnectionTimings {
      */
     public void setTo(RequestLog log) {
         requireNonNull(log, "log");
-        log.attr(TIMINGS).set(this);
+        setTo(log.context());
     }
 
     /**

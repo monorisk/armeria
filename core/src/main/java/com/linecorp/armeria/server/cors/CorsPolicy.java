@@ -40,9 +40,9 @@ import com.linecorp.armeria.common.HttpHeaders;
 import com.linecorp.armeria.common.HttpHeadersBuilder;
 import com.linecorp.armeria.common.HttpMethod;
 import com.linecorp.armeria.common.ResponseHeadersBuilder;
+import com.linecorp.armeria.internal.HttpTimestampSupplier;
 import com.linecorp.armeria.server.Route;
 import com.linecorp.armeria.server.cors.CorsConfig.ConstantValueSupplier;
-import com.linecorp.armeria.server.cors.CorsConfig.InstantValueSupplier;
 
 import io.netty.util.AsciiString;
 
@@ -53,6 +53,28 @@ public final class CorsPolicy {
 
     private static final String DELIMITER = ",";
     private static final Joiner HEADER_JOINER = Joiner.on(DELIMITER);
+
+    /**
+     * Returns a new {@link CorsPolicyBuilder}.
+     */
+    public static CorsPolicyBuilder builder() {
+        return new CorsPolicyBuilder();
+    }
+
+    /**
+     * Returns a new {@link CorsPolicyBuilder} with the specified {@code origins}.
+     */
+    public static CorsPolicyBuilder builder(String... origins) {
+        return new CorsPolicyBuilder(origins);
+    }
+
+    /**
+     * Returns a new {@link CorsPolicyBuilder} with the specified {@code origins}.
+     */
+    public static CorsPolicyBuilder builder(Iterable<String> origins) {
+        return new CorsPolicyBuilder(origins);
+    }
+
     private final Set<String> origins;
     private final List<Route> routes;
     private final boolean credentialsAllowed;
@@ -87,7 +109,7 @@ public final class CorsPolicy {
             this.preflightResponseHeaders = Collections.emptyMap();
         } else if (preflightResponseHeaders.isEmpty()) {
             this.preflightResponseHeaders = ImmutableMap.of(
-                    HttpHeaderNames.DATE, InstantValueSupplier.INSTANCE,
+                    HttpHeaderNames.DATE, HttpTimestampSupplier::currentTime,
                     HttpHeaderNames.CONTENT_LENGTH, ConstantValueSupplier.ZERO);
         } else {
             this.preflightResponseHeaders = ImmutableMap.copyOf(preflightResponseHeaders);

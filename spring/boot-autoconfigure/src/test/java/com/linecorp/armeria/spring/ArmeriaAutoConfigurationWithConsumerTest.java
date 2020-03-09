@@ -31,11 +31,10 @@ import org.junit.runner.RunWith;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Bean;
-import org.springframework.context.annotation.Import;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.junit4.SpringRunner;
 
-import com.linecorp.armeria.client.HttpClient;
+import com.linecorp.armeria.client.WebClient;
 import com.linecorp.armeria.common.AggregatedHttpResponse;
 import com.linecorp.armeria.common.HttpResponse;
 import com.linecorp.armeria.common.HttpStatus;
@@ -53,7 +52,6 @@ import com.linecorp.armeria.spring.ArmeriaAutoConfigurationWithConsumerTest.Test
 public class ArmeriaAutoConfigurationWithConsumerTest {
 
     @SpringBootApplication
-    @Import(ArmeriaOkServiceConfiguration.class)
     public static class TestConfiguration {
         @Bean
         public Consumer<ServerBuilder> customizer() {
@@ -74,7 +72,7 @@ public class ArmeriaAutoConfigurationWithConsumerTest {
 
     @Test
     public void normal() throws Exception {
-        final HttpClient client = HttpClient.of(newUrl("h1c"));
+        final WebClient client = WebClient.of(newUrl("h1c"));
 
         final HttpResponse response = client.get("/customizer");
 

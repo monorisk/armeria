@@ -18,13 +18,15 @@ package com.linecorp.armeria.common;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import java.lang.reflect.Method;
+
 import org.junit.jupiter.api.Test;
 
 import com.google.common.collect.Maps;
 
-public class DefaultResponseHeadersBuilderTest {
+class DefaultResponseHeadersBuilderTest {
     @Test
-    public void mutationAfterBuild() {
+    void mutationAfterBuild() {
         final ResponseHeaders headers = ResponseHeaders.of(200);
         final DefaultResponseHeadersBuilder builder = (DefaultResponseHeadersBuilder) headers.toBuilder();
 
@@ -73,7 +75,7 @@ public class DefaultResponseHeadersBuilderTest {
     }
 
     @Test
-    public void noMutationNoCopy() {
+    void noMutationNoCopy() {
         final ResponseHeaders headers = ResponseHeaders.of(200);
         final DefaultResponseHeadersBuilder builder = (DefaultResponseHeadersBuilder) headers.toBuilder();
         assertThat(builder.build()).isSameAs(headers);
@@ -81,7 +83,14 @@ public class DefaultResponseHeadersBuilderTest {
     }
 
     @Test
-    public void validation() {
+    void buildTwice() {
+        final ResponseHeadersBuilder builder = ResponseHeaders.builder(200).add("foo", "bar");
+        assertThat(builder.build()).isEqualTo(ResponseHeaders.of(HttpStatus.OK, "foo", "bar"));
+        assertThat(builder.build()).isEqualTo(ResponseHeaders.of(HttpStatus.OK, "foo", "bar"));
+    }
+
+    @Test
+    void validation() {
         // When delegate is null.
         assertThatThrownBy(() -> ResponseHeaders.builder().build())
                 .isInstanceOf(IllegalStateException.class)
@@ -90,5 +99,20 @@ public class DefaultResponseHeadersBuilderTest {
         assertThatThrownBy(() -> ResponseHeaders.builder().add("a", "b").build())
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining(":status");
+    }
+
+    /**
+     * Makes sure {@link ResponseHeadersBuilder} overrides all {@link HttpHeadersBuilder} methods
+     * with the correct return type.
+     */
+    @Test
+    void methodChaining() throws Exception {
+        for (Method m : ResponseHeadersBuilder.class.getMethods()) {
+            if (m.getReturnType() == HttpHeadersBuilder.class) {
+                final Method overriddenMethod =
+                        ResponseHeadersBuilder.class.getDeclaredMethod(m.getName(), m.getParameterTypes());
+                assertThat(overriddenMethod.getReturnType()).isSameAs(ResponseHeadersBuilder.class);
+            }
+        }
     }
 }

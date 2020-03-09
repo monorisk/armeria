@@ -57,10 +57,10 @@ import com.linecorp.armeria.internal.grpc.GrpcStatus;
 import com.linecorp.armeria.internal.grpc.MetadataUtil;
 import com.linecorp.armeria.internal.grpc.TimeoutHeaderUtil;
 import com.linecorp.armeria.server.AbstractHttpService;
+import com.linecorp.armeria.server.HttpServiceWithRoutes;
 import com.linecorp.armeria.server.Route;
 import com.linecorp.armeria.server.ServiceConfig;
 import com.linecorp.armeria.server.ServiceRequestContext;
-import com.linecorp.armeria.server.ServiceWithRoutes;
 
 import io.grpc.Codec.Identity;
 import io.grpc.CompressorRegistry;
@@ -87,8 +87,7 @@ import io.grpc.protobuf.services.ProtoReflectionService;
  *     </li>
  * </ul>
  */
-public final class GrpcService extends AbstractHttpService
-        implements ServiceWithRoutes<HttpRequest, HttpResponse> {
+public final class GrpcService extends AbstractHttpService implements HttpServiceWithRoutes {
 
     private static final Logger logger = LoggerFactory.getLogger(GrpcService.class);
 
@@ -111,6 +110,7 @@ public final class GrpcService extends AbstractHttpService
     private final int maxOutboundMessageSizeBytes;
     private final boolean useBlockingTaskExecutor;
     private final boolean unsafeWrapRequestBuffers;
+    private final boolean useClientTimeoutHeader;
     private final String advertisedEncodingsHeader;
     @Nullable
     private final ProtoReflectionService protoReflectionService;
@@ -128,6 +128,7 @@ public final class GrpcService extends AbstractHttpService
                 int maxOutboundMessageSizeBytes,
                 boolean useBlockingTaskExecutor,
                 boolean unsafeWrapRequestBuffers,
+                boolean useClientTimeoutHeader,
                 @Nullable ProtoReflectionService protoReflectionService,
                 int maxInboundMessageSizeBytes) {
         this.registry = requireNonNull(registry, "registry");
@@ -135,6 +136,7 @@ public final class GrpcService extends AbstractHttpService
         this.decompressorRegistry = requireNonNull(decompressorRegistry, "decompressorRegistry");
         this.compressorRegistry = requireNonNull(compressorRegistry, "compressorRegistry");
         this.supportedSerializationFormats = supportedSerializationFormats;
+        this.useClientTimeoutHeader = useClientTimeoutHeader;
         this.protoReflectionService = protoReflectionService;
         jsonMarshaller = jsonMarshaller(registry, supportedSerializationFormats, jsonMarshallerCustomizer);
         this.maxOutboundMessageSizeBytes = maxOutboundMessageSizeBytes;
@@ -182,22 +184,28 @@ public final class GrpcService extends AbstractHttpService
         final ServerMethodDefinition<?, ?> method = registry.lookupMethod(methodName);
         if (method == null) {
             return HttpResponse.of(
-                    ArmeriaServerCall.statusToTrailers(
+                    (ResponseHeaders) ArmeriaServerCall.statusToTrailers(
                             ctx,
                             Status.UNIMPLEMENTED.withDescription("Method not found: " + methodName),
                             new Metadata(),
                             false));
         }
 
-        final String timeoutHeader = req.headers().get(GrpcHeaderNames.GRPC_TIMEOUT);
-        if (timeoutHeader != null) {
-            try {
-                final long timeout = TimeoutHeaderUtil.fromHeaderValue(timeoutHeader);
-                ctx.setRequestTimeout(Duration.ofNanos(timeout));
-            } catch (IllegalArgumentException e) {
-                return HttpResponse.of(
-                        ArmeriaServerCall.statusToTrailers(
-                                ctx, GrpcStatus.fromThrowable(e), new Metadata(), false));
+        if (useClientTimeoutHeader) {
+            final String timeoutHeader = req.headers().get(GrpcHeaderNames.GRPC_TIMEOUT);
+            if (timeoutHeader != null) {
+                try {
+                    final long timeout = TimeoutHeaderUtil.fromHeaderValue(timeoutHeader);
+                    if (timeout == 0) {
+                        ctx.clearRequestTimeout();
+                    } else {
+                        ctx.setRequestTimeoutAfter(Duration.ofNanos(timeout));
+                    }
+                } catch (IllegalArgumentException e) {
+                    return HttpResponse.of(
+                            (ResponseHeaders) ArmeriaServerCall.statusToTrailers(
+                                    ctx, GrpcStatus.fromThrowable(e), new Metadata(), false));
+                }
             }
         }
 
@@ -208,7 +216,7 @@ public final class GrpcService extends AbstractHttpService
         final ArmeriaServerCall<?, ?> call = startCall(
                 methodName, method, ctx, req.headers(), res, serializationFormat);
         if (call != null) {
-            ctx.setRequestTimeoutHandler(() -> call.close(Status.DEADLINE_EXCEEDED, new Metadata()));
+            ctx.setRequestTimeoutHandler(() -> call.close(Status.CANCELLED, new Metadata()));
             req.subscribe(call.messageReader(), ctx.eventLoop(), WITH_POOLED_OBJECTS);
             req.completionFuture().handleAsync(call.messageReader(), ctx.eventLoop());
         }
@@ -236,7 +244,6 @@ public final class GrpcService extends AbstractHttpService
                 jsonMarshaller,
                 unsafeWrapRequestBuffers,
                 useBlockingTaskExecutor,
-                advertisedEncodingsHeader,
                 defaultHeaders.get(serializationFormat));
         final ServerCall.Listener<I> listener;
         try (SafeCloseable ignored = ctx.push()) {

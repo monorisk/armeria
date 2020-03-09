@@ -17,12 +17,13 @@
 package com.linecorp.armeria.server;
 
 import java.util.List;
-import java.util.Optional;
 
 import javax.annotation.Nullable;
 
 import com.linecorp.armeria.common.HttpMethod;
 import com.linecorp.armeria.common.MediaType;
+import com.linecorp.armeria.common.QueryParams;
+import com.linecorp.armeria.common.RequestHeaders;
 
 class RoutingContextWrapper implements RoutingContext {
 
@@ -58,6 +59,11 @@ class RoutingContextWrapper implements RoutingContext {
         return delegate.query();
     }
 
+    @Override
+    public QueryParams params() {
+        return delegate.params();
+    }
+
     @Nullable
     @Override
     public MediaType contentType() {
@@ -70,22 +76,52 @@ class RoutingContextWrapper implements RoutingContext {
     }
 
     @Override
-    public List<Object> summary() {
-        return delegate.summary();
+    public RequestHeaders headers() {
+        return delegate.headers();
     }
 
     @Override
-    public void delayThrowable(Throwable cause) {
-        delegate.delayThrowable(cause);
+    public void deferStatusException(HttpStatusException cause) {
+        delegate.deferStatusException(cause);
     }
 
     @Override
-    public Optional<Throwable> delayedThrowable() {
-        return delegate.delayedThrowable();
+    public HttpStatusException deferredStatusException() {
+        return delegate.deferredStatusException();
+    }
+
+    @Override
+    public RoutingContext overridePath(String path) {
+        return delegate.overridePath(path);
     }
 
     @Override
     public boolean isCorsPreflight() {
         return delegate.isCorsPreflight();
+    }
+
+    @Override
+    public boolean requiresMatchingParamsPredicates() {
+        return delegate.requiresMatchingParamsPredicates();
+    }
+
+    @Override
+    public boolean requiresMatchingHeadersPredicates() {
+        return delegate.requiresMatchingHeadersPredicates();
+    }
+
+    @Override
+    public int hashCode() {
+        return DefaultRoutingContext.hashCode(this);
+    }
+
+    @Override
+    public boolean equals(@Nullable Object obj) {
+        return DefaultRoutingContext.equals(this, obj);
+    }
+
+    @Override
+    public String toString() {
+        return DefaultRoutingContext.toString(this);
     }
 }

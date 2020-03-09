@@ -21,8 +21,7 @@ import java.net.URI;
 
 import javax.annotation.Nullable;
 
-final class DefaultRequestHeadersBuilder
-        extends AbstractHttpHeadersBuilder<DefaultRequestHeadersBuilder, RequestHeaders>
+final class DefaultRequestHeadersBuilder extends AbstractHttpHeadersBuilder<RequestHeadersBuilder>
         implements RequestHeadersBuilder {
 
     DefaultRequestHeadersBuilder() {}
@@ -42,12 +41,18 @@ final class DefaultRequestHeadersBuilder
 
         final HttpHeadersBase parent = parent();
         if (parent != null) {
-            return (RequestHeaders) parent;
+            if (parent instanceof RequestHeaders) {
+                return (RequestHeaders) parent;
+            } else {
+                return updateParent(new DefaultRequestHeaders(parent));
+            }
         }
 
         // No headers were set.
         throw new IllegalStateException("must set ':method' and ':path' headers");
     }
+
+    // Shortcuts
 
     @Override
     public URI uri() {

@@ -21,6 +21,8 @@ import java.util.function.BiFunction;
 
 import com.google.common.io.BaseEncoding;
 
+import com.linecorp.armeria.internal.TemporaryThreadLocals;
+
 final class DefaultEntityTagFunction implements BiFunction<String, HttpFileAttributes, String> {
 
     private static final BaseEncoding etagEncoding = BaseEncoding.base64().omitPadding();
@@ -38,7 +40,7 @@ final class DefaultEntityTagFunction implements BiFunction<String, HttpFileAttri
         requireNonNull(pathOrUri, "pathOrUri");
         requireNonNull(attrs, "attrs");
 
-        final byte[] data = new byte[4 + 8 + 8];
+        final byte[] data = TemporaryThreadLocals.get().byteArray(4 + 8 + 8);
         final long hashCode = pathOrUri.hashCode() & 0xFFFFFFFFL;
         final long length = attrs.length();
         final long lastModifiedMillis = attrs.lastModifiedMillis();

@@ -21,9 +21,7 @@ import static java.util.Objects.requireNonNull;
 import java.util.Arrays;
 import java.util.function.Function;
 
-import com.linecorp.armeria.common.HttpRequest;
-import com.linecorp.armeria.common.HttpResponse;
-import com.linecorp.armeria.server.Service;
+import com.linecorp.armeria.server.HttpService;
 import com.linecorp.armeria.server.annotation.DecoratorFactoryFunction;
 import com.linecorp.armeria.server.annotation.decorator.CorsDecorator;
 import com.linecorp.armeria.server.annotation.decorator.CorsDecorators;
@@ -34,23 +32,22 @@ import com.linecorp.armeria.server.annotation.decorator.CorsDecorators;
 public final class CorsDecoratorsFactoryFunction implements DecoratorFactoryFunction<CorsDecorators> {
 
     @Override
-    public Function<Service<HttpRequest, HttpResponse>,
-            ? extends Service<HttpRequest, HttpResponse>> newDecorator(CorsDecorators parameter) {
+    public Function<? super HttpService, ? extends HttpService> newDecorator(CorsDecorators parameter) {
         ensureValidConfig(parameter);
         final CorsDecorator[] policies = parameter.value();
         final CorsDecorator corsDecorator = policies[0];
-        final CorsServiceBuilder cb = CorsServiceBuilder.forOrigins(corsDecorator.origins());
+        final CorsServiceBuilder cb = CorsService.builder(corsDecorator.origins());
         if (parameter.shortCircuit()) {
             cb.shortCircuit();
         }
         cb.firstPolicyBuilder.setConfig(corsDecorator);
         for (int i = 1; i < policies.length; i++) {
-            final CorsPolicyBuilder builder = new CorsPolicyBuilder(policies[i].origins());
+            final CorsPolicyBuilder builder = CorsPolicy.builder(policies[i].origins());
             builder.setConfig(policies[i]);
             cb.addPolicy(builder.build());
         }
 
-        final Function<Service<HttpRequest, HttpResponse>, CorsService> decorator = cb.newDecorator();
+        final Function<? super HttpService, CorsService> decorator = cb.newDecorator();
         return service -> {
             if (service.as(CorsService.class).isPresent()) {
                 return service;

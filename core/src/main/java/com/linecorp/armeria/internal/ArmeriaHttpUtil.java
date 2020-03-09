@@ -305,7 +305,7 @@ public final class ArmeriaHttpUtil {
         // Decode percent-encoded characters.
         // An invalid character is replaced with 0xFF, which will be replaced into '�' by UTF-8 decoder.
         final int len = path.length();
-        final byte[] buf = new byte[len];
+        final byte[] buf = TemporaryThreadLocals.get().byteArray(len);
         int dstLen = 0;
         for (int i = 0; i < len; i++) {
             final char ch = path.charAt(i);
@@ -673,7 +673,7 @@ public final class ArmeriaHttpUtil {
         final CharSequenceMap result = new CharSequenceMap(arraySizeHint);
 
         while (valuesIter.hasNext()) {
-            final AsciiString lowerCased = HttpHeaderNames.of(valuesIter.next()).toLowerCase();
+            final AsciiString lowerCased = AsciiString.of(valuesIter.next()).toLowerCase();
             try {
                 int index = lowerCased.forEachByte(FIND_COMMA);
                 if (index != -1) {

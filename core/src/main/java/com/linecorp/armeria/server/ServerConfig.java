@@ -20,6 +20,7 @@ import static com.google.common.collect.ImmutableList.toImmutableList;
 import static java.util.Objects.requireNonNull;
 
 import java.net.InetAddress;
+import java.net.InetSocketAddress;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -27,20 +28,22 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.Executor;
-import java.util.concurrent.ExecutorService;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.function.Function;
 import java.util.function.Predicate;
+import java.util.function.Supplier;
 
 import javax.annotation.Nullable;
 
 import com.google.common.collect.ImmutableList;
 
 import com.linecorp.armeria.common.Request;
+import com.linecorp.armeria.common.RequestId;
 import com.linecorp.armeria.internal.ConnectionLimitingHandler;
 import com.linecorp.armeria.server.logging.AccessLogWriter;
 
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.binder.jvm.ExecutorServiceMetrics;
-import io.micrometer.core.instrument.internal.TimedExecutor;
 import io.micrometer.core.instrument.internal.TimedExecutorService;
 import io.netty.channel.ChannelOption;
 import io.netty.channel.EventLoopGroup;
@@ -70,10 +73,7 @@ public final class ServerConfig {
     private final Executor startStopExecutor;
     private final int maxNumConnections;
 
-    private final long requestTimeoutMillis;
     private final long idleTimeoutMillis;
-    private final long maxRequestLength;
-    private final boolean verboseResponses;
 
     private final int http2InitialConnectionWindowSize;
     private final int http2InitialStreamWindowSize;
@@ -87,15 +87,10 @@ public final class ServerConfig {
     private final Duration gracefulShutdownQuietPeriod;
     private final Duration gracefulShutdownTimeout;
 
-    private final ExecutorService blockingTaskExecutor;
+    private final ScheduledExecutorService blockingTaskExecutor;
     private final boolean shutdownBlockingTaskExecutorOnStop;
 
     private final MeterRegistry meterRegistry;
-
-    private final String serviceLoggerPrefix;
-
-    private final AccessLogWriter accessLogWriter;
-    private final boolean shutdownAccessLogWriterOnStop;
 
     private final int proxyProtocolMaxTlvSize;
 
@@ -103,8 +98,12 @@ public final class ServerConfig {
     private final Map<ChannelOption<?>, ?> childChannelOptions;
 
     private final List<ClientAddressSource> clientAddressSources;
-    private final Predicate<InetAddress> clientAddressTrustedProxyFilter;
-    private final Predicate<InetAddress> clientAddressFilter;
+    private final Predicate<? super InetAddress> clientAddressTrustedProxyFilter;
+    private final Predicate<? super InetAddress> clientAddressFilter;
+    private final Function<? super ProxiedAddresses, ? extends InetSocketAddress> clientAddressMapper;
+    private final boolean enableServerHeader;
+    private final boolean enableDateHeader;
+    private final Supplier<? extends RequestId> requestIdGenerator;
 
     @Nullable
     private String strVal;
@@ -114,19 +113,20 @@ public final class ServerConfig {
             VirtualHost defaultVirtualHost, Iterable<VirtualHost> virtualHosts,
             EventLoopGroup workerGroup, boolean shutdownWorkerGroupOnStop, Executor startStopExecutor,
             int maxNumConnections, long idleTimeoutMillis,
-            long requestTimeoutMillis, long maxRequestLength, boolean verboseResponses,
             int http2InitialConnectionWindowSize, int http2InitialStreamWindowSize,
             long http2MaxStreamsPerConnection, int http2MaxFrameSize, long http2MaxHeaderListSize,
             int http1MaxInitialLineLength, int http1MaxHeaderSize, int http1MaxChunkSize,
             Duration gracefulShutdownQuietPeriod, Duration gracefulShutdownTimeout,
-            Executor blockingTaskExecutor, boolean shutdownBlockingTaskExecutorOnStop,
-            MeterRegistry meterRegistry, String serviceLoggerPrefix,
-            AccessLogWriter accessLogWriter, boolean shutdownAccessLogWriterOnStop, int proxyProtocolMaxTlvSize,
+            ScheduledExecutorService blockingTaskExecutor, boolean shutdownBlockingTaskExecutorOnStop,
+            MeterRegistry meterRegistry, int proxyProtocolMaxTlvSize,
             Map<ChannelOption<?>, Object> channelOptions,
             Map<ChannelOption<?>, Object> childChannelOptions,
             List<ClientAddressSource> clientAddressSources,
-            Predicate<InetAddress> clientAddressTrustedProxyFilter,
-            Predicate<InetAddress> clientAddressFilter) {
+            Predicate<? super InetAddress> clientAddressTrustedProxyFilter,
+            Predicate<? super InetAddress> clientAddressFilter,
+            Function<? super ProxiedAddresses, ? extends InetSocketAddress> clientAddressMapper,
+            boolean enableServerHeader, boolean enableDateHeader,
+            Supplier<? extends RequestId> requestIdGenerator) {
 
         requireNonNull(ports, "ports");
         requireNonNull(defaultVirtualHost, "defaultVirtualHost");
@@ -138,9 +138,6 @@ public final class ServerConfig {
         this.startStopExecutor = requireNonNull(startStopExecutor, "startStopExecutor");
         this.maxNumConnections = validateMaxNumConnections(maxNumConnections);
         this.idleTimeoutMillis = validateIdleTimeoutMillis(idleTimeoutMillis);
-        this.requestTimeoutMillis = validateRequestTimeoutMillis(requestTimeoutMillis);
-        this.maxRequestLength = validateMaxRequestLength(maxRequestLength);
-        this.verboseResponses = verboseResponses;
         this.http2InitialConnectionWindowSize = http2InitialConnectionWindowSize;
         this.http2InitialStreamWindowSize = http2InitialStreamWindowSize;
         this.http2MaxStreamsPerConnection = http2MaxStreamsPerConnection;
@@ -160,27 +157,14 @@ public final class ServerConfig {
                                    gracefulShutdownQuietPeriod, "gracefulShutdownQuietPeriod");
 
         requireNonNull(blockingTaskExecutor, "blockingTaskExecutor");
-        if (blockingTaskExecutor instanceof ExecutorService) {
-            ExecutorService taskExecutor = (ExecutorService) blockingTaskExecutor;
-            if (!(blockingTaskExecutor instanceof TimedExecutorService)) {
-                taskExecutor = ExecutorServiceMetrics.monitor(meterRegistry, taskExecutor,
-                                                              "armeriaBlockingTaskExecutor");
-            }
-            this.blockingTaskExecutor = new InterminableExecutorService(taskExecutor);
-        } else {
-            Executor taskExecutor = blockingTaskExecutor;
-            if (!(blockingTaskExecutor instanceof TimedExecutor)) {
-                taskExecutor = ExecutorServiceMetrics.monitor(meterRegistry, taskExecutor,
-                                                              "armeriaBlockingTaskExecutor");
-            }
-            this.blockingTaskExecutor = new ExecutorBasedExecutorService(taskExecutor);
+        if (!(blockingTaskExecutor instanceof TimedExecutorService)) {
+            blockingTaskExecutor = ExecutorServiceMetrics.monitor(meterRegistry, blockingTaskExecutor,
+                                                                  "armeriaBlockingTaskExecutor");
         }
+        this.blockingTaskExecutor = UnstoppableScheduledExecutorService.from(blockingTaskExecutor);
         this.shutdownBlockingTaskExecutorOnStop = shutdownBlockingTaskExecutorOnStop;
 
         this.meterRegistry = requireNonNull(meterRegistry, "meterRegistry");
-        this.serviceLoggerPrefix = ServiceConfig.validateLoggerName(serviceLoggerPrefix, "serviceLoggerPrefix");
-        this.accessLogWriter = requireNonNull(accessLogWriter, "accessLogWriter");
-        this.shutdownAccessLogWriterOnStop = shutdownAccessLogWriterOnStop;
         this.channelOptions = Collections.unmodifiableMap(
                 new Object2ObjectArrayMap<>(requireNonNull(channelOptions, "channelOptions")));
         this.childChannelOptions = Collections.unmodifiableMap(
@@ -190,6 +174,7 @@ public final class ServerConfig {
         this.clientAddressTrustedProxyFilter =
                 requireNonNull(clientAddressTrustedProxyFilter, "clientAddressTrustedProxyFilter");
         this.clientAddressFilter = requireNonNull(clientAddressFilter, "clientAddressFilter");
+        this.clientAddressMapper = requireNonNull(clientAddressMapper, "clientAddressMapper");
 
         // Set localAddresses.
         final List<ServerPort> portsCopy = new ArrayList<>();
@@ -243,6 +228,10 @@ public final class ServerConfig {
         services = virtualHostsCopy.stream()
                                    .flatMap(h -> h.serviceConfigs().stream())
                                    .collect(toImmutableList());
+
+        this.enableServerHeader = enableServerHeader;
+        this.enableDateHeader = enableDateHeader;
+        this.requestIdGenerator = requireNonNull(requestIdGenerator, "requestIdGenerator");
     }
 
     static int validateMaxNumConnections(int maxNumConnections) {
@@ -254,21 +243,6 @@ public final class ServerConfig {
             throw new IllegalArgumentException("idleTimeoutMillis: " + idleTimeoutMillis + " (expected: >= 0)");
         }
         return idleTimeoutMillis;
-    }
-
-    static long validateRequestTimeoutMillis(long requestTimeoutMillis) {
-        if (requestTimeoutMillis < 0) {
-            throw new IllegalArgumentException(
-                    "requestTimeoutMillis: " + requestTimeoutMillis + " (expected: >= 0)");
-        }
-        return requestTimeoutMillis;
-    }
-
-    static long validateMaxRequestLength(long maxRequestLength) {
-        if (maxRequestLength < 0) {
-            throw new IllegalArgumentException("maxRequestLength: " + maxRequestLength + " (expected: >= 0)");
-        }
-        return maxRequestLength;
     }
 
     static int validateNonNegative(int value, String fieldName) {
@@ -349,22 +323,20 @@ public final class ServerConfig {
     }
 
     /**
-     * Finds the {@link List} of {@link VirtualHost}s that contains the specified {@link Service}. If there's
-     * no match, an empty {@link List} is returned. Note that this is potentially an expensive operation and
-     * thus should not be used in a performance-sensitive path.
+     * Finds the {@link List} of {@link VirtualHost}s that contains the specified {@link HttpService}.
+     * If there's no match, an empty {@link List} is returned. Note that this is potentially an expensive
+     * operation and thus should not be used in a performance-sensitive path.
      */
-    public List<VirtualHost> findVirtualHosts(Service<?, ?> service) {
+    public List<VirtualHost> findVirtualHosts(HttpService service) {
         requireNonNull(service, "service");
 
-        @SuppressWarnings("rawtypes")
-        final Class<? extends Service> serviceType = service.getClass();
+        final Class<? extends HttpService> serviceType = service.getClass();
         final List<VirtualHost> res = new ArrayList<>();
         for (VirtualHost h : virtualHosts) {
             for (ServiceConfig c : h.serviceConfigs()) {
                 // Consider the case where the specified service is decorated before being added.
-                final Service<?, ?> s = c.service();
-                @SuppressWarnings("rawtypes")
-                final Optional<? extends Service> sOpt = s.as(serviceType);
+                final HttpService s = c.service();
+                final Optional<? extends HttpService> sOpt = s.as(serviceType);
                 if (!sOpt.isPresent()) {
                     continue;
                 }
@@ -380,7 +352,7 @@ public final class ServerConfig {
     }
 
     /**
-     * Returns the information of all available {@link Service}s in the {@link Server}.
+     * Returns the information of all available {@link HttpService}s in the {@link Server}.
      */
     public List<ServiceConfig> serviceConfigs() {
         return services;
@@ -442,43 +414,47 @@ public final class ServerConfig {
     /**
      * Returns the timeout of a request.
      *
-     * @deprecated Use {@link #requestTimeoutMillis()}.
+     * @deprecated Use {@link ServiceConfig#requestTimeoutMillis()} or
+     *             {@link VirtualHost#requestTimeoutMillis()}.
      */
     @Deprecated
     public long defaultRequestTimeoutMillis() {
-        return requestTimeoutMillis;
+        return requestTimeoutMillis();
     }
 
     /**
      * Returns the timeout of a request.
      *
-     * @see ServiceConfig#requestTimeoutMillis()
-     * @see VirtualHost#requestTimeoutMillis()
+     * @deprecated Use {@link ServiceConfig#requestTimeoutMillis()} or
+     *             {@link VirtualHost#requestTimeoutMillis()}.
      */
+    @Deprecated
     public long requestTimeoutMillis() {
-        return requestTimeoutMillis;
+        return defaultVirtualHost.requestTimeoutMillis();
     }
 
     /**
      * Returns the maximum allowed length of the content decoded at the session layer.
      * e.g. the content length of an HTTP request.
      *
-     * @deprecated Use {@link #maxRequestLength()}.
+     * @deprecated Use {@link ServiceConfig#maxRequestLength()} or
+     *             {@link VirtualHost#maxRequestLength()}.
      */
     @Deprecated
     public long defaultMaxRequestLength() {
-        return maxRequestLength;
+        return maxRequestLength();
     }
 
     /**
      * Returns the maximum allowed length of the content decoded at the session layer.
      * e.g. the content length of an HTTP request.
      *
-     * @see ServiceConfig#maxRequestLength()
-     * @see VirtualHost#maxRequestLength()
+     * @deprecated Use {@link ServiceConfig#maxRequestLength()} or
+     *             {@link VirtualHost#maxRequestLength()}.
      */
+    @Deprecated
     public long maxRequestLength() {
-        return maxRequestLength;
+        return defaultVirtualHost.maxRequestLength();
     }
 
     /**
@@ -486,11 +462,12 @@ public final class ServerConfig {
      * the exception type and its full stack trace, which may be useful for debugging while potentially
      * insecure. When disabled, the server responses will not expose such server-side details to the client.
      *
-     * @see ServiceConfig#verboseResponses()
-     * @see VirtualHost#verboseResponses()
+     * @deprecated Use {@link ServiceConfig#verboseResponses()} or
+     *             {@link VirtualHost#verboseResponses()}.
      */
+    @Deprecated
     public boolean verboseResponses() {
-        return verboseResponses;
+        return defaultVirtualHost.verboseResponses();
     }
 
     /**
@@ -568,12 +545,12 @@ public final class ServerConfig {
     }
 
     /**
-     * Returns the {@link ExecutorService} dedicated to the execution of blocking tasks or invocations.
-     * Note that the {@link ExecutorService} returned by this method does not set the
+     * Returns the {@link ScheduledExecutorService} dedicated to the execution of blocking tasks or invocations.
+     * Note that the {@link ScheduledExecutorService} returned by this method does not set the
      * {@link ServiceRequestContext} when executing a submitted task.
      * Use {@link ServiceRequestContext#blockingTaskExecutor()} if possible.
      */
-    public ExecutorService blockingTaskExecutor() {
+    public ScheduledExecutorService blockingTaskExecutor() {
         return blockingTaskExecutor;
     }
 
@@ -592,24 +569,25 @@ public final class ServerConfig {
     }
 
     /**
-     * Returns the prefix of {@linkplain ServiceRequestContext#logger() service logger}'s names.
+     * Returns the access log writer.
+     *
+     * @deprecated Use {@link ServiceConfig#accessLogWriter()} or
+     *             {@link VirtualHost#accessLogWriter()}.
      */
-    public String serviceLoggerPrefix() {
-        return serviceLoggerPrefix;
-    }
-
-    /**
-     * Returns an access log writer.
-     */
+    @Deprecated
     public AccessLogWriter accessLogWriter() {
-        return accessLogWriter;
+        return defaultVirtualHost.accessLogWriter();
     }
 
     /**
      * Returns whether the {@link AccessLogWriter} is shut down when the {@link Server} stops.
+     *
+     * @deprecated Use {@link ServiceConfig#shutdownAccessLogWriterOnStop()} or
+     *             {@link VirtualHost#shutdownAccessLogWriterOnStop()}.
      */
+    @Deprecated
     public boolean shutdownAccessLogWriterOnStop() {
-        return shutdownAccessLogWriterOnStop;
+        return defaultVirtualHost.shutdownAccessLogWriterOnStop();
     }
 
     /**
@@ -631,15 +609,43 @@ public final class ServerConfig {
     /**
      * Returns a filter which evaluates whether an {@link InetAddress} of a remote endpoint is trusted.
      */
-    public Predicate<InetAddress> clientAddressTrustedProxyFilter() {
+    public Predicate<? super InetAddress> clientAddressTrustedProxyFilter() {
         return clientAddressTrustedProxyFilter;
     }
 
     /**
      * Returns a filter which evaluates whether an {@link InetAddress} can be used as a client address.
      */
-    public Predicate<InetAddress> clientAddressFilter() {
+    public Predicate<? super InetAddress> clientAddressFilter() {
         return clientAddressFilter;
+    }
+
+    /**
+     * Returns a {@link Function} to use when determining the client address from {@link ProxiedAddresses}.
+     */
+    public Function<? super ProxiedAddresses, ? extends InetSocketAddress> clientAddressMapper() {
+        return clientAddressMapper;
+    }
+
+    /**
+     * Returns whether the response header will include default {@code "Server"} header.
+     */
+    public boolean isServerHeaderEnabled() {
+        return enableServerHeader;
+    }
+
+    /**
+     * Returns whether the response header will include default {@code "Date"} header.
+     */
+    public boolean isDateHeaderEnabled() {
+        return enableDateHeader;
+    }
+
+    /**
+     * Returns the {@link Supplier} that generates a {@link RequestId} for each {@link Request}.
+     */
+    public Supplier<? extends RequestId> requestIdGenerator() {
+        return requestIdGenerator;
     }
 
     @Override
@@ -650,17 +656,15 @@ public final class ServerConfig {
                     getClass(), ports(), null, virtualHosts(),
                     workerGroup(), shutdownWorkerGroupOnStop(),
                     maxNumConnections(), idleTimeoutMillis(),
-                    requestTimeoutMillis(), maxRequestLength(), verboseResponses(),
                     http2InitialConnectionWindowSize(), http2InitialStreamWindowSize(),
                     http2MaxStreamsPerConnection(), http2MaxFrameSize(), http2MaxHeaderListSize(),
                     http1MaxInitialLineLength(), http1MaxHeaderSize(), http1MaxChunkSize(),
                     proxyProtocolMaxTlvSize(), gracefulShutdownQuietPeriod(), gracefulShutdownTimeout(),
                     blockingTaskExecutor(), shutdownBlockingTaskExecutorOnStop(),
-                    meterRegistry(), serviceLoggerPrefix(),
-                    accessLogWriter(), shutdownAccessLogWriterOnStop(),
-                    channelOptions(), childChannelOptions(),
-                    clientAddressSources(), clientAddressTrustedProxyFilter(), clientAddressFilter()
-            );
+                    meterRegistry(),channelOptions(), childChannelOptions(),
+                    clientAddressSources(), clientAddressTrustedProxyFilter(), clientAddressFilter(),
+                    clientAddressMapper(),
+                    isServerHeaderEnabled(), isDateHeaderEnabled());
         }
 
         return strVal;
@@ -670,19 +674,19 @@ public final class ServerConfig {
             @Nullable Class<?> type, Iterable<ServerPort> ports,
             @Nullable VirtualHost defaultVirtualHost, List<VirtualHost> virtualHosts,
             EventLoopGroup workerGroup, boolean shutdownWorkerGroupOnStop,
-            int maxNumConnections, long idleTimeoutMillis, long requestTimeoutMillis,
-            long maxRequestLength, boolean verboseResponses, int http2InitialConnectionWindowSize,
+            int maxNumConnections, long idleTimeoutMillis, int http2InitialConnectionWindowSize,
             int http2InitialStreamWindowSize, long http2MaxStreamsPerConnection, int http2MaxFrameSize,
             long http2MaxHeaderListSize, long http1MaxInitialLineLength, long http1MaxHeaderSize,
             long http1MaxChunkSize, int proxyProtocolMaxTlvSize,
             Duration gracefulShutdownQuietPeriod, Duration gracefulShutdownTimeout,
-            Executor blockingTaskExecutor, boolean shutdownBlockingTaskExecutorOnStop,
-            @Nullable MeterRegistry meterRegistry, String serviceLoggerPrefix,
-            AccessLogWriter accessLogWriter, boolean shutdownAccessLogWriterOnStop,
+            ScheduledExecutorService blockingTaskExecutor, boolean shutdownBlockingTaskExecutorOnStop,
+            @Nullable MeterRegistry meterRegistry,
             Map<ChannelOption<?>, ?> channelOptions, Map<ChannelOption<?>, ?> childChannelOptions,
             List<ClientAddressSource> clientAddressSources,
-            Predicate<InetAddress> clientAddressTrustedProxyFilter,
-            Predicate<InetAddress> clientAddressFilter) {
+            Predicate<? super InetAddress> clientAddressTrustedProxyFilter,
+            Predicate<? super InetAddress> clientAddressFilter,
+            Function<? super ProxiedAddresses, ? extends InetSocketAddress> clientAddressMapper,
+            boolean serverHeaderEnabled, boolean dateHeaderEnabled) {
 
         final StringBuilder buf = new StringBuilder();
         if (type != null) {
@@ -729,13 +733,7 @@ public final class ServerConfig {
         buf.append(maxNumConnections);
         buf.append(", idleTimeout: ");
         buf.append(idleTimeoutMillis);
-        buf.append("ms, requestTimeout: ");
-        buf.append(requestTimeoutMillis);
-        buf.append("ms, maxRequestLength: ");
-        buf.append(maxRequestLength);
-        buf.append("B, verboseResponses: ");
-        buf.append(verboseResponses);
-        buf.append(", http2InitialConnectionWindowSize: ");
+        buf.append("ms, http2InitialConnectionWindowSize: ");
         buf.append(http2InitialConnectionWindowSize);
         buf.append("B, http2InitialStreamWindowSize: ");
         buf.append(http2InitialStreamWindowSize);
@@ -765,12 +763,6 @@ public final class ServerConfig {
             buf.append(", meterRegistry: ");
             buf.append(meterRegistry);
         }
-        buf.append(", serviceLoggerPrefix: ");
-        buf.append(serviceLoggerPrefix);
-        buf.append(", accessLogWriter: ");
-        buf.append(accessLogWriter);
-        buf.append(", shutdownAccessLogWriterOnStop: ");
-        buf.append(shutdownAccessLogWriterOnStop);
         buf.append(", channelOptions: ");
         buf.append(channelOptions);
         buf.append(", childChannelOptions: ");
@@ -781,6 +773,12 @@ public final class ServerConfig {
         buf.append(clientAddressTrustedProxyFilter);
         buf.append(", clientAddressFilter: ");
         buf.append(clientAddressFilter);
+        buf.append(", clientAddressMapper: ");
+        buf.append(clientAddressMapper);
+        buf.append(", serverHeader: ");
+        buf.append(serverHeaderEnabled ? "enabled" : "disabled");
+        buf.append(", dateHeader: ");
+        buf.append(dateHeaderEnabled ? "enabled" : "disabled");
         buf.append(')');
 
         return buf.toString();

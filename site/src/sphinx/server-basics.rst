@@ -41,11 +41,11 @@ Even if we opened a port, it's of no use if we didn't bind any services to them.
 
 .. code-block:: java
 
-    import com.linecorp.armeria.common.HttpParameters;
     import com.linecorp.armeria.common.HttpRequest;
     import com.linecorp.armeria.common.HttpResponse;
     import com.linecorp.armeria.common.HttpStatus;
     import com.linecorp.armeria.common.MediaType;
+    import com.linecorp.armeria.common.QueryParams;
 
     import com.linecorp.armeria.server.AbstractHttpService;
     import com.linecorp.armeria.server.Server;
@@ -110,8 +110,8 @@ Even if we opened a port, it's of no use if we didn't bind any services to them.
     // Getting a map of query parameters on an annotated service object:
     sb.annotatedService(new Object() {
         @Get("/greet6")
-        public HttpResponse greet(HttpParameters parameters) {
-            return HttpResponse.of("Hello, %s!", parameters.get("name"));
+        public HttpResponse greet(QueryParams params) {
+            return HttpResponse.of("Hello, %s!", params.get("name"));
         }
     });
 
@@ -177,6 +177,8 @@ for a specific service, you can use fluent API:
       .post("/foo/bar")                          // Matched when the path is "/foo/bar" and the method is POST.
       .consumes(MediaType.JSON)                  // Matched when the "content-type" header is "application/json".
       .produces(MediaType.JSON)                  // Matched when the "accept" headers is "application/json".
+      .matchesHeaders("baz=qux")                 // Matched when the "baz" header is "qux".
+      .matchesParams("quux=quuz")                // Matched when the "quux" parameter is "quuz".
       .requestTimeoutMillis(5000)
       .maxRequestLength(8192)
       .verboseResponses(true)

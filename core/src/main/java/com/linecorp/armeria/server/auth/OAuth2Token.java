@@ -38,6 +38,9 @@ public final class OAuth2Token {
         this.accessToken = requireNonNull(accessToken, "accessToken");
     }
 
+    /**
+     * Returns the access token.
+     */
     public String accessToken() {
         return accessToken;
     }
@@ -51,7 +54,7 @@ public final class OAuth2Token {
             return false;
         }
         final OAuth2Token that = (OAuth2Token) o;
-        return accessToken.equals(that.accessToken);
+        return BasicToken.secureEquals(accessToken, that.accessToken);
     }
 
     @Override

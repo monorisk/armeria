@@ -18,7 +18,6 @@ package com.linecorp.armeria.server.cors;
 
 import static java.util.Objects.requireNonNull;
 
-import java.time.Instant;
 import java.util.List;
 import java.util.function.Supplier;
 
@@ -26,7 +25,6 @@ import javax.annotation.Nullable;
 
 import com.google.common.base.Ascii;
 import com.google.common.base.MoreObjects;
-import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableList.Builder;
 import com.google.common.collect.Iterables;
 
@@ -42,25 +40,11 @@ import com.linecorp.armeria.server.RoutingContext;
  */
 public final class CorsConfig {
 
-    /**
-     * {@link CorsConfig} with CORS disabled.
-     */
-    public static final CorsConfig DISABLED = new CorsConfig();
-
-    private final boolean enabled;
     private final boolean anyOriginSupported;
     private final boolean shortCircuit;
     private final List<CorsPolicy> policies;
 
-    CorsConfig() {
-        enabled = false;
-        shortCircuit = false;
-        anyOriginSupported = false;
-        policies = ImmutableList.of();
-    }
-
     CorsConfig(CorsServiceBuilder builder) {
-        enabled = true;
         anyOriginSupported = builder.anyOriginSupported;
         shortCircuit = builder.shortCircuit;
         policies = new Builder<CorsPolicy>()
@@ -70,23 +54,11 @@ public final class CorsConfig {
     }
 
     /**
-     * Determines if support for CORS is enabled.
-     *
-     * @return {@code true} if support for CORS is enabled, false otherwise.
-     */
-    public boolean isEnabled() {
-        return enabled;
-    }
-
-    /**
      * Determines whether a wildcard origin, '*', is supported.
      *
      * @return {@code true} if any origin is allowed.
-     *
-     * @throws IllegalStateException if CORS support is not enabled
      */
     public boolean isAnyOriginSupported() {
-        ensureEnabled();
         return anyOriginSupported;
     }
 
@@ -106,11 +78,8 @@ public final class CorsConfig {
 
     /**
      * Returns the policies.
-     *
-     * @throws IllegalStateException if CORS support is not enabled.
      */
     public List<CorsPolicy> policies() {
-        ensureEnabled();
         return policies;
     }
 
@@ -153,28 +122,18 @@ public final class CorsConfig {
                routes.stream().anyMatch(route -> route.apply(routingContext).isPresent());
     }
 
-    private void ensureEnabled() {
-        if (!isEnabled()) {
-            throw new IllegalStateException("CORS support not enabled");
-        }
-    }
-
     @Override
     public String toString() {
-        return toString(this, enabled, anyOriginSupported, shortCircuit, policies);
+        return toString(this, anyOriginSupported, shortCircuit, policies);
     }
 
-    static String toString(Object obj, boolean enabled, boolean anyOriginSupported, boolean shortCircuit,
+    static String toString(Object obj, boolean anyOriginSupported, boolean shortCircuit,
                            List<CorsPolicy> policies) {
-        if (enabled) {
-            return MoreObjects.toStringHelper(obj)
-                              .add("policies", policies)
-                              .add("shortCircuit", shortCircuit)
-                              .add("anyOriginSupported", anyOriginSupported)
-                              .toString();
-        } else {
-            return obj.getClass().getSimpleName() + "{disabled}";
-        }
+        return MoreObjects.toStringHelper(obj)
+                          .add("policies", policies)
+                          .add("shortCircuit", shortCircuit)
+                          .add("anyOriginSupported", anyOriginSupported)
+                          .toString();
     }
 
     /**
@@ -200,26 +159,6 @@ public final class CorsConfig {
         @Override
         public String toString() {
             return String.valueOf(value);
-        }
-    }
-
-    /**
-     * This {@link Supplier} is used for the {@code "Date"} preflight HTTP response header.
-     * It's value must be generated when the response is generated, hence will be
-     * different for every call.
-     */
-    static final class InstantValueSupplier implements Supplier<Instant> {
-
-        static final InstantValueSupplier INSTANCE = new InstantValueSupplier();
-
-        @Override
-        public Instant get() {
-            return Instant.now();
-        }
-
-        @Override
-        public String toString() {
-            return "<now>";
         }
     }
 }

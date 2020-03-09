@@ -39,12 +39,13 @@ import org.apache.thrift.transport.TTransportException;
 
 import com.google.common.base.Strings;
 
-import com.linecorp.armeria.client.Client;
 import com.linecorp.armeria.client.ClientRequestContext;
+import com.linecorp.armeria.client.DecoratingClient;
 import com.linecorp.armeria.client.Endpoint;
+import com.linecorp.armeria.client.HttpClient;
 import com.linecorp.armeria.client.InvalidResponseHeadersException;
+import com.linecorp.armeria.client.RpcClient;
 import com.linecorp.armeria.common.AggregatedHttpResponse;
-import com.linecorp.armeria.common.DefaultRpcResponse;
 import com.linecorp.armeria.common.HttpData;
 import com.linecorp.armeria.common.HttpMethod;
 import com.linecorp.armeria.common.HttpRequest;
@@ -58,9 +59,9 @@ import com.linecorp.armeria.common.SerializationFormat;
 import com.linecorp.armeria.common.thrift.ThriftCall;
 import com.linecorp.armeria.common.thrift.ThriftProtocolFactories;
 import com.linecorp.armeria.common.thrift.ThriftReply;
-import com.linecorp.armeria.common.util.AbstractUnwrappable;
 import com.linecorp.armeria.common.util.CompletionActions;
 import com.linecorp.armeria.common.util.Exceptions;
+import com.linecorp.armeria.internal.JavaVersionSpecific;
 import com.linecorp.armeria.internal.thrift.TApplicationExceptions;
 import com.linecorp.armeria.internal.thrift.TByteBufTransport;
 import com.linecorp.armeria.internal.thrift.ThriftFieldAccess;
@@ -72,9 +73,8 @@ import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteBufHolder;
 import io.netty.util.ReferenceCountUtil;
 
-final class THttpClientDelegate
-        extends AbstractUnwrappable<Client<HttpRequest, HttpResponse>>
-        implements Client<RpcRequest, RpcResponse> {
+final class THttpClientDelegate extends DecoratingClient<HttpRequest, HttpResponse, RpcRequest, RpcResponse>
+        implements RpcClient {
 
     private final AtomicInteger nextSeqId = new AtomicInteger();
 
@@ -83,7 +83,7 @@ final class THttpClientDelegate
     private final MediaType mediaType;
     private final Map<Class<?>, ThriftServiceMetadata> metadataMap = new ConcurrentHashMap<>();
 
-    THttpClientDelegate(Client<HttpRequest, HttpResponse> httpClient,
+    THttpClientDelegate(HttpClient httpClient,
                         SerializationFormat serializationFormat) {
         super(httpClient);
         this.serializationFormat = serializationFormat;
@@ -96,7 +96,7 @@ final class THttpClientDelegate
         final int seqId = nextSeqId.incrementAndGet();
         final String method = call.method();
         final List<Object> args = call.params();
-        final DefaultRpcResponse reply = new DefaultRpcResponse();
+        final RpcResponse reply = JavaVersionSpecific.get().newRequestContextAwareRpcResponse(ctx);
 
         ctx.logBuilder().serializationFormat(serializationFormat);
 
@@ -107,7 +107,7 @@ final class THttpClientDelegate
                 throw new IllegalArgumentException("Thrift method not found: " + method);
             }
         } catch (Throwable cause) {
-            reply.completeExceptionally(cause);
+            reply.toCompletableFuture().completeExceptionally(cause);
             return reply;
         }
 
@@ -197,7 +197,7 @@ final class THttpClientDelegate
         return metadataMap.computeIfAbsent(serviceType, ThriftServiceMetadata::new);
     }
 
-    private void handle(ClientRequestContext ctx, int seqId, DefaultRpcResponse reply,
+    private void handle(ClientRequestContext ctx, int seqId, RpcResponse reply,
                         ThriftFunction func, HttpData content) throws TException {
 
         if (func.isOneWay()) {
@@ -278,19 +278,19 @@ final class THttpClientDelegate
         return null;
     }
 
-    private static void handleSuccess(ClientRequestContext ctx, DefaultRpcResponse reply,
+    private static void handleSuccess(ClientRequestContext ctx, RpcResponse reply,
                                       @Nullable Object returnValue, @Nullable ThriftReply rawResponseContent) {
-        reply.complete(returnValue);
+        reply.toCompletableFuture().complete(returnValue);
         ctx.logBuilder().responseContent(reply, rawResponseContent);
     }
 
-    private static void handleException(ClientRequestContext ctx, DefaultRpcResponse reply,
+    private static void handleException(ClientRequestContext ctx, RpcResponse reply,
                                         @Nullable ThriftReply rawResponseContent, Exception cause) {
-        reply.completeExceptionally(cause);
+        reply.toCompletableFuture().completeExceptionally(cause);
         ctx.logBuilder().responseContent(reply, rawResponseContent);
     }
 
-    private static void handlePreDecodeException(ClientRequestContext ctx, DefaultRpcResponse reply,
+    private static void handlePreDecodeException(ClientRequestContext ctx, RpcResponse reply,
                                                  ThriftFunction thriftMethod, Throwable cause) {
         handleException(ctx, reply, null,
                         decodeException(cause, thriftMethod.declaredExceptions()));

@@ -17,6 +17,8 @@
 package com.linecorp.armeria.client;
 
 import java.time.Duration;
+import java.time.Instant;
+import java.util.Iterator;
 import java.util.Map.Entry;
 
 import javax.annotation.Nullable;
@@ -25,7 +27,11 @@ import com.linecorp.armeria.client.endpoint.EndpointSelector;
 import com.linecorp.armeria.common.HttpHeaders;
 import com.linecorp.armeria.common.HttpRequest;
 import com.linecorp.armeria.common.RequestContextWrapper;
+import com.linecorp.armeria.common.RequestId;
 import com.linecorp.armeria.common.RpcRequest;
+import com.linecorp.armeria.server.ServiceRequestContext;
+
+import io.netty.util.AttributeKey;
 
 /**
  * Wraps an existing {@link ClientRequestContext}.
@@ -40,10 +46,26 @@ public class ClientRequestContextWrapper
         super(delegate);
     }
 
+    @Nullable
     @Override
-    public ClientRequestContext newDerivedContext(@Nullable HttpRequest req, @Nullable RpcRequest rpcReq,
-                                                  Endpoint endpoint) {
-        return delegate().newDerivedContext(req, rpcReq, endpoint);
+    public ServiceRequestContext root() {
+        return delegate().root();
+    }
+
+    @Override
+    public <V> V ownAttr(AttributeKey<V> key) {
+        return delegate().ownAttr(key);
+    }
+
+    @Override
+    public Iterator<Entry<AttributeKey<?>, Object>> ownAttrs() {
+        return delegate().ownAttrs();
+    }
+
+    @Override
+    public ClientRequestContext newDerivedContext(RequestId id, @Nullable HttpRequest req,
+                                                  @Nullable RpcRequest rpcReq, Endpoint endpoint) {
+        return delegate().newDerivedContext(id, req, rpcReq, endpoint);
     }
 
     @Override
@@ -87,6 +109,11 @@ public class ClientRequestContextWrapper
     }
 
     @Override
+    public void clearResponseTimeout() {
+        delegate().clearResponseTimeout();
+    }
+
+    @Override
     public void setResponseTimeoutMillis(long responseTimeoutMillis) {
         delegate().setResponseTimeoutMillis(responseTimeoutMillis);
     }
@@ -94,6 +121,47 @@ public class ClientRequestContextWrapper
     @Override
     public void setResponseTimeout(Duration responseTimeout) {
         delegate().setResponseTimeout(responseTimeout);
+    }
+
+    @Override
+    public void extendResponseTimeoutMillis(long adjustmentMillis) {
+        delegate().extendResponseTimeoutMillis(adjustmentMillis);
+    }
+
+    @Override
+    public void extendResponseTimeout(Duration adjustment) {
+        delegate().extendResponseTimeout(adjustment);
+    }
+
+    @Override
+    public void setResponseTimeoutAfterMillis(long responseTimeoutMillis) {
+        delegate().setResponseTimeoutAfterMillis(responseTimeoutMillis);
+    }
+
+    @Override
+    public void setResponseTimeoutAfter(Duration responseTimeout) {
+        delegate().setResponseTimeoutAfter(responseTimeout);
+    }
+
+    @Override
+    public void setResponseTimeoutAtMillis(long responseTimeoutAtMillis) {
+        delegate().setResponseTimeoutAtMillis(responseTimeoutAtMillis);
+    }
+
+    @Override
+    public void setResponseTimeoutAt(Instant responseTimeoutAt) {
+        delegate().setResponseTimeoutAt(responseTimeoutAt);
+    }
+
+    @Override
+    @Nullable
+    public Runnable responseTimeoutHandler() {
+        return delegate().responseTimeoutHandler();
+    }
+
+    @Override
+    public void setResponseTimeoutHandler(Runnable responseTimeoutHandler) {
+       delegate().setResponseTimeoutHandler(responseTimeoutHandler);
     }
 
     @Override

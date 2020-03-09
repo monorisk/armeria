@@ -29,6 +29,7 @@ import com.google.common.collect.Lists;
 
 import com.linecorp.armeria.client.Endpoint;
 import com.linecorp.armeria.common.util.AbstractListenable;
+import com.linecorp.armeria.internal.eventloop.EventLoopCheckingCompletableFuture;
 
 /**
  * A dynamic {@link EndpointGroup}. The list of {@link Endpoint}s can be updated dynamically.
@@ -41,7 +42,8 @@ public class DynamicEndpointGroup extends AbstractListenable<List<Endpoint>> imp
 
     private volatile List<Endpoint> endpoints = UNINITIALIZED_ENDPOINTS;
     private final Lock endpointsLock = new ReentrantLock();
-    private final CompletableFuture<List<Endpoint>> initialEndpointsFuture = new CompletableFuture<>();
+    private final CompletableFuture<List<Endpoint>> initialEndpointsFuture =
+            new EventLoopCheckingCompletableFuture<>();
 
     @Override
     public final List<Endpoint> endpoints() {
@@ -97,7 +99,7 @@ public class DynamicEndpointGroup extends AbstractListenable<List<Endpoint>> imp
         final List<Endpoint> oldEndpoints = this.endpoints;
         final List<Endpoint> newEndpoints = ImmutableList.sortedCopyOf(endpoints);
 
-        if (oldEndpoints != UNINITIALIZED_ENDPOINTS && oldEndpoints.equals(newEndpoints)) {
+        if (!hasChanges(oldEndpoints, newEndpoints)) {
             return;
         }
 
@@ -110,6 +112,26 @@ public class DynamicEndpointGroup extends AbstractListenable<List<Endpoint>> imp
 
         notifyListeners(newEndpoints);
         completeInitialEndpointsFuture(newEndpoints);
+    }
+
+    private static boolean hasChanges(List<Endpoint> oldEndpoints, List<Endpoint> newEndpoints) {
+        if (oldEndpoints == UNINITIALIZED_ENDPOINTS) {
+            return true;
+        }
+
+        if (oldEndpoints.size() != newEndpoints.size()) {
+            return true;
+        }
+
+        for (int i = 0; i < oldEndpoints.size(); i++) {
+            final Endpoint a = oldEndpoints.get(i);
+            final Endpoint b = newEndpoints.get(i);
+            if (!a.equals(b) || a.weight() != b.weight()) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private void completeInitialEndpointsFuture(List<Endpoint> endpoints) {

@@ -70,34 +70,42 @@ attach it to your :api:`Server`.
 
 .. code-block:: java
 
-    SamlServiceProvider ssp = new SamlServiceProviderBuilder()
-            // Specify information about your keystore. The keystore contains two key pairs
-            // which are identified as 'signing' and 'encryption'.
-            .credentialResolver(new KeyStoreCredentialResolverBuilder("sample.jks")
-                                        .type("PKCS12")
-                                        .password("N5^X[hvG")
-                                        // You need to specify your key pair and its password here.
-                                        .addKeyPassword("signing", "N5^X[hvG")
-                                        .addKeyPassword("encryption", "N5^X[hvG")
-                                        .build())
-            // Specify the entity ID of this service provider. You can specify what you want.
-            .entityId("your-sp-id")
-            .hostname("your-service-domain-name")
-            // Specify an authorizer in order to authenticate a request.
-            .authorizer(new Authorizer<HttpRequest>() { ... })
-            // Speicify an SAML single sign-on handler which sends a response to an end user
-            // after he or she is authenticated or not.
-            .ssoHandler(new SamlSingleSignOnHandler() { ... })
-            // Specify the signature algorithm of your key.
-            .signatureAlgorithm(SignatureConstants.ALGO_ID_SIGNATURE_RSA)
-            .idp()
-            // Specify the entity ID of the identity provider. It can be found from the metadata of
-            // the identity provider.
-            .entityId("https://idp.ssocircle.com")
-            // Specify the endpoint that is supposed to send an authentication request.
-            .ssoEndpoint(ofHttpPost("https://idp.ssocircle.com:443/sso/SSOPOST/metaAlias/publicidp"))
-            .and()
-            .build();
+    // Specify information about your keystore.
+    // The keystore contains two key pairs, which are identified as 'signing' and 'encryption'.
+    KeyStoreCredentialResolver credentialResolver =
+            new KeyStoreCredentialResolverBuilder(ClassLoader.getSystemClassLoader(),
+                                                  "sample.jks")
+                    .type("PKCS12")
+                    .password("N5^X[hvG")
+                    // You need to specify your key pair and its password here.
+                    .addKeyPassword("signing", "N5^X[hvG")
+                    .addKeyPassword("encryption", "N5^X[hvG")
+                    .build();
+
+    SamlServiceProvider ssp =
+            SamlServiceProvider.builder()
+                               .credentialResolver(credentialResolver)
+                               // Specify the entity ID of this service provider.
+                               // You can specify what you want.
+                               .entityId("your-sp-id")
+                               .hostname("your-service-domain-name")
+                               // Specify an authorizer in order to authenticate a request.
+                               .authorizer(new Authorizer<HttpRequest>() { ... })
+                               // Speicify an SAML single sign-on handler
+                               // which sends a response to an end user
+                               // after he or she is authenticated or not.
+                               .ssoHandler(new SamlSingleSignOnHandler() { ... })
+                               // Specify the signature algorithm of your key.
+                               .signatureAlgorithm(SignatureConstants.ALGO_ID_SIGNATURE_RSA)
+                               .idp()
+                               // Specify the entity ID of the identity provider.
+                               // It can be found from the metadata of the identity provider.
+                               .entityId("https://idp.ssocircle.com")
+                               // Specify the endpoint that is supposed to send an authentication request.
+                               .ssoEndpoint(
+                                   ofHttpPost("https://idp.ssocircle.com:443/sso/SSOPOST/metaAlias/publicidp"))
+                               .and()
+                               .build();
 
     Server server = Server.builder()
                           .https(8443)
@@ -145,15 +153,16 @@ like ``MyAuthorizer`` in this example.
 
             // Note that you MUST NOT use this example in a real world application. You may consider encoding
             // the value using JSON Web Tokens to prevent tempering.
-            final Cookie cookie = new DefaultCookie("username", username);
-            cookie.setHttpOnly(true);
-            cookie.setDomain("localhost");
-            cookie.setMaxAge(60);
-            cookie.setPath("/");
+            final Cookie cookie = Cookie.builder("username", username)
+                                        .httpOnly(true)
+                                        .domain("localhost")
+                                        .maxAge(60)
+                                        .path("/")
+                                        .build();
             return HttpResponse.of(
                     ResponseHeaders,of(HttpStatus.OK,
                                        HttpHeaderNames.CONTENT_TYPE, MediaType.HTML_UTF_8,
-                                       HttpHeaderNames.SET_COOKIE, ServerCookieEncoder.LAX.encode(cookie)),
+                                       HttpHeaderNames.SET_COOKIE, cookie.toSetCookieHeader()),
                     HttpData.ofUtf8("<html><body onLoad=\"window.location.href='/welcome'\"></body></html>"));
         }
 
@@ -175,7 +184,7 @@ like ``MyAuthorizer`` in this example.
                 return CompletableFuture.completedFuture(false);
             }
 
-            final boolean authenticated = ServerCookieDecoder.LAX.decode(cookie).stream().anyMatch(
+            final boolean authenticated = Cookie.fromCookieHeader(cookie).stream().anyMatch(
                     c -> "username".equals(c.name()) && !Strings.isNullOrEmpty(c.value()));
             return CompletableFuture.completedFuture(authenticated);
         }

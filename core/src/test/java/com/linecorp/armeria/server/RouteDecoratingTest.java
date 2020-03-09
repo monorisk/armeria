@@ -35,18 +35,18 @@ import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.MethodSource;
 
+import com.google.common.base.Strings;
 import com.google.common.collect.ImmutableList;
 
 import com.linecorp.armeria.client.ClientFactory;
-import com.linecorp.armeria.client.ClientFactoryBuilder;
-import com.linecorp.armeria.client.HttpClient;
+import com.linecorp.armeria.client.WebClient;
 import com.linecorp.armeria.common.AggregatedHttpResponse;
 import com.linecorp.armeria.common.HttpHeaderNames;
 import com.linecorp.armeria.common.HttpMethod;
-import com.linecorp.armeria.common.HttpRequest;
 import com.linecorp.armeria.common.HttpResponse;
 import com.linecorp.armeria.common.HttpStatus;
 import com.linecorp.armeria.common.RequestHeaders;
+import com.linecorp.armeria.common.RequestHeadersBuilder;
 import com.linecorp.armeria.server.annotation.Get;
 import com.linecorp.armeria.server.annotation.Param;
 import com.linecorp.armeria.testing.internal.MockAddressResolverGroup;
@@ -62,7 +62,7 @@ class RouteDecoratingTest {
         queue = new ArrayDeque<>();
     }
 
-    static DecoratingServiceFunction<HttpRequest, HttpResponse> newDecorator(int id) {
+    static DecoratingHttpServiceFunction newDecorator(int id) {
         return (delegate, ctx, req) -> {
             queue.add(id);
             return delegate.serve(ctx, req);
@@ -140,10 +140,31 @@ class RouteDecoratingTest {
         }
     };
 
+    @RegisterExtension
+    static ServerExtension headersAndParamsExpectingServer = new ServerExtension() {
+        @Override
+        protected void configure(ServerBuilder sb) throws Exception {
+            sb.decorator(Route.builder().path("/")
+                              .matchesHeaders("dest=headers-decorator").build(),
+                         (delegate, ctx, req) -> HttpResponse.of("headers-decorator"))
+              .service(Route.builder().methods(HttpMethod.GET).path("/")
+                            .matchesHeaders("dest=headers-service").build(),
+                       (ctx, req) -> HttpResponse.of("headers-service"))
+              .decorator(Route.builder().path("/")
+                              .matchesParams("dest=params-decorator").build(),
+                         (delegate, ctx, req) -> HttpResponse.of("params-decorator"))
+              .service(Route.builder().methods(HttpMethod.GET).path("/")
+                            .matchesParams("dest=params-service").build(),
+                       (ctx, req) -> HttpResponse.of("params-service"))
+              .service(Route.builder().methods(HttpMethod.GET).path("/").build(),
+                       (ctx, req) -> HttpResponse.of(HttpStatus.INTERNAL_SERVER_ERROR));
+        }
+    };
+
     @ParameterizedTest
     @MethodSource("generateDecorateInOrder")
     void decorateInOrder(String path, List<Integer> orders) {
-        final HttpClient client = HttpClient.of(decoratingServer.uri("/"));
+        final WebClient client = WebClient.of(decoratingServer.uri("/"));
         client.get(path).aggregate().join();
         assertThat(queue).containsExactlyElementsOf(orders);
     }
@@ -168,7 +189,7 @@ class RouteDecoratingTest {
             "/assets/resources/private/profile.jpg, , 200, private",
     })
     void secured(String path, @Nullable String authorization, int status, String cacheControl) {
-        final HttpClient client = HttpClient.of(authServer.uri("/"));
+        final WebClient client = WebClient.of(authServer.uri("/"));
         final RequestHeaders headers;
         if (authorization != null) {
             headers = RequestHeaders.of(HttpMethod.GET, path, HttpHeaderNames.AUTHORIZATION, authorization);
@@ -187,10 +208,13 @@ class RouteDecoratingTest {
             "bar.com, /bar/1, , 200"
     })
     void virtualHost(String host, String path, @Nullable String authorization, int status) {
-        final ClientFactory factory = new ClientFactoryBuilder()
-                .addressResolverGroupFactory(eventLoop -> MockAddressResolverGroup.localhost())
-                .build();
-        final HttpClient client = HttpClient.of(factory, "http://" + host + ':' + virtualHostServer.httpPort());
+        final ClientFactory factory =
+                ClientFactory.builder()
+                             .addressResolverGroupFactory(eventLoop -> MockAddressResolverGroup.localhost())
+                             .build();
+        final WebClient client = WebClient.builder("http://" + host + ':' + virtualHostServer.httpPort())
+                                          .factory(factory)
+                                          .build();
         final RequestHeaders headers;
         if (authorization != null) {
             headers = RequestHeaders.of(HttpMethod.GET, path, HttpHeaderNames.AUTHORIZATION, authorization);
@@ -203,9 +227,26 @@ class RouteDecoratingTest {
 
     @Test
     void shouldSetPath() {
-        assertThatThrownBy(() -> new ServerBuilder()
-                .routeDecorator().build(Function.identity())
-        ).isInstanceOf(IllegalStateException.class)
-         .hasMessageContaining("Should set at least one");
+        assertThatThrownBy(() -> Server.builder().routeDecorator().build(Function.identity()))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("Should set at least one");
+    }
+
+    @ParameterizedTest
+    @CsvSource({
+            "/,                       headers-decorator,  headers-decorator",
+            "/,                       headers-service,    headers-service",
+            "/?dest=params-decorator, ,                   params-decorator",
+            "/?dest=params-service,   ,                   params-service"
+    })
+    void decoratorShouldWorkWithMatchingHeadersAndParams(String path,
+                                                         @Nullable String destHeader,
+                                                         String result) {
+        final WebClient client = WebClient.of(headersAndParamsExpectingServer.uri("/"));
+        final RequestHeadersBuilder builder = RequestHeaders.builder().method(HttpMethod.GET).path(path);
+        if (!Strings.isNullOrEmpty(destHeader)) {
+            builder.add("dest", destHeader);
+        }
+        assertThat(client.execute(builder.build()).aggregate().join().contentUtf8()).isEqualTo(result);
     }
 }

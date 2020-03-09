@@ -41,6 +41,7 @@ import com.google.common.annotations.VisibleForTesting;
 
 import com.linecorp.armeria.common.HttpHeaderNames;
 import com.linecorp.armeria.common.HttpHeaders;
+import com.linecorp.armeria.common.RequestId;
 import com.linecorp.armeria.common.ResponseHeaders;
 import com.linecorp.armeria.common.RpcRequest;
 import com.linecorp.armeria.common.logging.RequestLog;
@@ -48,7 +49,6 @@ import com.linecorp.armeria.common.util.Exceptions;
 import com.linecorp.armeria.server.ServiceRequestContext;
 
 import io.netty.util.AsciiString;
-import io.netty.util.Attribute;
 import io.netty.util.AttributeKey;
 
 /**
@@ -237,6 +237,7 @@ interface AccessLogComponent {
                 case REQUEST_LINE:
                 case RESPONSE_STATUS_CODE:
                 case RESPONSE_LENGTH:
+                case REQUEST_ID:
                     return true;
                 default:
                     return false;
@@ -306,9 +307,15 @@ interface AccessLogComponent {
 
                 case RESPONSE_STATUS_CODE:
                     return log.statusCode();
-
                 case RESPONSE_LENGTH:
                     return log.responseLength();
+                case REQUEST_ID:
+                    final RequestId id = log.id();
+                    if ("short".equals(variable)) {
+                        return id.shortText();
+                    } else {
+                        return id.text();
+                    }
             }
             return null;
         }
@@ -377,8 +384,8 @@ interface AccessLogComponent {
         @Nullable
         @Override
         Object getMessage0(RequestLog log) {
-            final Attribute<?> value = log.context().attr(key);
-            return value != null ? stringifer.apply(value.get()) : null;
+            final Object value = log.context().attr(key);
+            return value != null ? stringifer.apply(value) : null;
         }
     }
 

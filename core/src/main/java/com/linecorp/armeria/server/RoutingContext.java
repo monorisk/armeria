@@ -19,7 +19,6 @@ package com.linecorp.armeria.server;
 import static java.util.Objects.requireNonNull;
 
 import java.util.List;
-import java.util.Optional;
 
 import javax.annotation.Nullable;
 
@@ -27,6 +26,8 @@ import com.linecorp.armeria.common.HttpHeaderNames;
 import com.linecorp.armeria.common.HttpMethod;
 import com.linecorp.armeria.common.HttpRequest;
 import com.linecorp.armeria.common.MediaType;
+import com.linecorp.armeria.common.QueryParams;
+import com.linecorp.armeria.common.RequestHeaders;
 import com.linecorp.armeria.internal.ArmeriaHttpUtil;
 
 /**
@@ -63,6 +64,11 @@ public interface RoutingContext {
     String query();
 
     /**
+     * Returns the query parameters retrieved from the request path.
+     */
+    QueryParams params();
+
+    /**
      * Returns {@link MediaType} specified by 'Content-Type' header of the request.
      */
     @Nullable
@@ -76,24 +82,25 @@ public interface RoutingContext {
     List<MediaType> acceptTypes();
 
     /**
-     * Returns an identifier of this {@link RoutingContext} instance.
-     * It would be used as a cache key to reduce pattern list traversal.
+     * Returns the {@link RequestHeaders} retrieved from the request.
      */
-    List<Object> summary();
+    RequestHeaders headers();
 
     /**
-     * Delays throwing a {@link Throwable} until reaching the end of the service list.
+     * Defers throwing an {@link HttpStatusException} until reaching the end of the service list.
      */
-    void delayThrowable(Throwable cause);
+    void deferStatusException(HttpStatusException cause);
 
     /**
-     * Returns a delayed {@link Throwable} set before via {@link #delayThrowable(Throwable)}.
+     * Returns a deferred {@link HttpStatusException} which was previously set via
+     * {@link #deferStatusException(HttpStatusException)}.
      */
-    Optional<Throwable> delayedThrowable();
+    @Nullable
+    HttpStatusException deferredStatusException();
 
     /**
      * Returns a wrapped {@link RoutingContext} which holds the specified {@code path}.
-     * It is usually used to find a {@link Service} with a prefix-stripped path.
+     * It is usually used to find an {@link HttpService} with a prefix-stripped path.
      */
     default RoutingContext overridePath(String path) {
         requireNonNull(path, "path");
@@ -111,4 +118,22 @@ public interface RoutingContext {
      * @see ArmeriaHttpUtil#isCorsPreflightRequest(HttpRequest)
      */
     boolean isCorsPreflight();
+
+    /**
+     * Returns {@code true} if this context requires matching the predicates for query parameters.
+     *
+     * @see RouteBuilder#matchesParams(Iterable)
+     */
+    default boolean requiresMatchingParamsPredicates() {
+        return true;
+    }
+
+    /**
+     * Returns {@code true} if this context requires matching the predicates for HTTP headers.
+     *
+     * @see RouteBuilder#matchesHeaders(Iterable)
+     */
+    default boolean requiresMatchingHeadersPredicates() {
+        return true;
+    }
 }

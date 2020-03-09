@@ -19,20 +19,21 @@ package com.linecorp.armeria.server;
 import java.net.InetAddress;
 import java.net.SocketAddress;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.Map;
 import java.util.Map.Entry;
-import java.util.concurrent.ExecutorService;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.function.BiConsumer;
 
 import javax.annotation.Nonnull;
 import javax.annotation.Nullable;
 
-import org.slf4j.Logger;
-
+import com.linecorp.armeria.client.ClientRequestContext;
 import com.linecorp.armeria.common.HttpHeaders;
 import com.linecorp.armeria.common.HttpRequest;
-import com.linecorp.armeria.common.HttpResponse;
 import com.linecorp.armeria.common.MediaType;
 import com.linecorp.armeria.common.RequestContextWrapper;
+import com.linecorp.armeria.common.RequestId;
 import com.linecorp.armeria.common.RpcRequest;
 import com.linecorp.armeria.server.logging.AccessLogWriter;
 
@@ -70,13 +71,30 @@ public class ServiceRequestContextWrapper
     }
 
     @Override
+    public boolean isTimedOut() {
+        return false;
+    }
+
+    @Override
     public InetAddress clientAddress() {
         return delegate().clientAddress();
     }
 
     @Override
-    public ServiceRequestContext newDerivedContext(@Nullable HttpRequest req, @Nullable RpcRequest rpcReq) {
-        return delegate().newDerivedContext(req, rpcReq);
+    public void onChild(BiConsumer<? super ServiceRequestContext, ? super ClientRequestContext> callback) {
+        delegate().onChild(callback);
+    }
+
+    @Override
+    public void invokeOnChildCallbacks(ClientRequestContext newCtx) {
+        delegate().invokeOnChildCallbacks(newCtx);
+    }
+
+    @Override
+    public ServiceRequestContext newDerivedContext(RequestId id,
+                                                   @Nullable HttpRequest req,
+                                                   @Nullable RpcRequest rpcReq) {
+        return delegate().newDerivedContext(id, req, rpcReq);
     }
 
     @Override
@@ -105,12 +123,12 @@ public class ServiceRequestContextWrapper
     }
 
     @Override
-    public <T extends Service<HttpRequest, HttpResponse>> T service() {
+    public HttpService service() {
         return delegate().service();
     }
 
     @Override
-    public ExecutorService blockingTaskExecutor() {
+    public ScheduledExecutorService blockingTaskExecutor() {
         return delegate().blockingTaskExecutor();
     }
 
@@ -131,13 +149,13 @@ public class ServiceRequestContextWrapper
     }
 
     @Override
-    public Logger logger() {
-        return delegate().logger();
+    public long requestTimeoutMillis() {
+        return delegate().requestTimeoutMillis();
     }
 
     @Override
-    public long requestTimeoutMillis() {
-        return delegate().requestTimeoutMillis();
+    public void clearRequestTimeout() {
+        delegate().clearRequestTimeout();
     }
 
     @Override
@@ -148,6 +166,42 @@ public class ServiceRequestContextWrapper
     @Override
     public void setRequestTimeout(Duration requestTimeout) {
         delegate().setRequestTimeout(requestTimeout);
+    }
+
+    @Override
+    public void extendRequestTimeoutMillis(long requestTimeoutMillis) {
+        delegate().extendRequestTimeoutMillis(requestTimeoutMillis);
+    }
+
+    @Override
+    public void extendRequestTimeout(Duration requestTimeout) {
+        delegate().extendRequestTimeout(requestTimeout);
+    }
+
+    @Override
+    public void setRequestTimeoutAfterMillis(long requestTimeoutMillis) {
+        delegate().setRequestTimeoutAfterMillis(requestTimeoutMillis);
+    }
+
+    @Override
+    public void setRequestTimeoutAfter(Duration requestTimeout) {
+        delegate().setRequestTimeoutAfter(requestTimeout);
+    }
+
+    @Override
+    public void setRequestTimeoutAtMillis(long requestTimeoutAtMillis) {
+        delegate().setRequestTimeoutAfterMillis(requestTimeoutAtMillis);
+    }
+
+    @Override
+    public void setRequestTimeoutAt(Instant requestTimeoutAt) {
+        delegate().setRequestTimeoutAt(requestTimeoutAt);
+    }
+
+    @Nullable
+    @Override
+    public Runnable requestTimeoutHandler() {
+        return delegate().requestTimeoutHandler();
     }
 
     @Override
@@ -239,7 +293,6 @@ public class ServiceRequestContextWrapper
         return delegate().removeAdditionalResponseTrailer(name);
     }
 
-    @Nullable
     @Override
     public ProxiedAddresses proxiedAddresses() {
         return delegate().proxiedAddresses();

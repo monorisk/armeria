@@ -21,6 +21,7 @@ import java.nio.channels.ClosedChannelException;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
 import java.util.function.IntPredicate;
 import java.util.function.LongPredicate;
 import java.util.function.Predicate;
@@ -41,15 +42,17 @@ import com.google.common.collect.ImmutableList;
 
 import com.linecorp.armeria.client.ClientFactoryBuilder;
 import com.linecorp.armeria.client.retry.Backoff;
-import com.linecorp.armeria.client.retry.RetryingHttpClient;
+import com.linecorp.armeria.client.retry.RetryingClient;
 import com.linecorp.armeria.client.retry.RetryingRpcClient;
 import com.linecorp.armeria.common.util.Exceptions;
 import com.linecorp.armeria.common.util.Sampler;
+import com.linecorp.armeria.common.util.SystemInfo;
 import com.linecorp.armeria.internal.SslContextUtil;
 import com.linecorp.armeria.server.RoutingContext;
 import com.linecorp.armeria.server.ServerBuilder;
 import com.linecorp.armeria.server.Service;
 import com.linecorp.armeria.server.ServiceConfig;
+import com.linecorp.armeria.server.ServiceRequestContext;
 import com.linecorp.armeria.server.annotation.ExceptionHandler;
 import com.linecorp.armeria.server.annotation.ExceptionVerbosity;
 
@@ -59,6 +62,8 @@ import io.netty.handler.codec.http2.Http2CodecUtil;
 import io.netty.handler.codec.http2.Http2Exception;
 import io.netty.handler.ssl.OpenSsl;
 import io.netty.handler.ssl.SslContextBuilder;
+import io.netty.resolver.DefaultAddressResolverGroup;
+import io.netty.resolver.dns.DnsNameResolverTimeoutException;
 import io.netty.util.ReferenceCountUtil;
 
 /**
@@ -74,7 +79,7 @@ public final class Flags {
 
     private static final int NUM_CPU_CORES = Runtime.getRuntime().availableProcessors();
 
-    private static final String DEFAULT_VERBOSE_EXCEPTION_SAMPLER_SPEC = "rate-limited=10";
+    private static final String DEFAULT_VERBOSE_EXCEPTION_SAMPLER_SPEC = "rate-limit=10";
     private static final String VERBOSE_EXCEPTION_SAMPLER_SPEC;
     private static final Sampler<Class<? extends Throwable>> VERBOSE_EXCEPTION_SAMPLER;
 
@@ -117,9 +122,8 @@ public final class Flags {
     private static final boolean HAS_WSLENV = System.getenv("WSLENV") != null;
     private static final boolean USE_EPOLL = getBoolean("useEpoll", isEpollAvailable(),
                                                         value -> isEpollAvailable() || !value);
-
-    private static final boolean USE_OPENSSL = getBoolean("useOpenSsl", OpenSsl.isAvailable(),
-                                                          value -> OpenSsl.isAvailable() || !value);
+    @Nullable
+    private static Boolean useOpenSsl;
 
     private static final boolean DUMP_OPENSSL_INFO = getBoolean("dumpOpenSslInfo", false);
 
@@ -282,6 +286,10 @@ public final class Flags {
     private static final Optional<String> HEADER_VALUE_CACHE_SPEC =
             caffeineSpec("headerValueCache", DEFAULT_HEADER_VALUE_CACHE_SPEC);
 
+    private static final String DEFAULT_FILE_SERVICE_CACHE_SPEC = "maximumSize=1024";
+    private static final Optional<String> FILE_SERVICE_CACHE_SPEC =
+            caffeineSpec("fileServiceCache", DEFAULT_FILE_SERVICE_CACHE_SPEC);
+
     private static final String DEFAULT_CACHED_HEADERS =
             ":authority,:scheme,:method,accept-encoding,content-type";
     private static final List<String> CACHED_HEADERS =
@@ -292,6 +300,13 @@ public final class Flags {
     private static final ExceptionVerbosity ANNOTATED_SERVICE_EXCEPTION_VERBOSITY =
             exceptionLoggingMode("annotatedServiceExceptionVerbosity",
                                  DEFAULT_ANNOTATED_SERVICE_EXCEPTION_VERBOSITY);
+
+    private static final boolean USE_JDK_DNS_RESOLVER = getBoolean("useJdkDnsResolver", false);
+
+    private static final boolean REPORT_BLOCKED_EVENT_LOOP =
+            getBoolean("reportBlockedEventLoop", true);
+
+    private static final boolean VALIDATE_HEADERS = getBoolean("validateHeaders", true);
 
     static {
         if (!isEpollAvailable()) {
@@ -308,34 +323,15 @@ public final class Flags {
         } else if (USE_EPOLL) {
             logger.info("Using /dev/epoll");
         }
-
-        if (!OpenSsl.isAvailable()) {
-            final Throwable cause = Exceptions.peel(OpenSsl.unavailabilityCause());
-            logger.info("OpenSSL not available: {}", cause.toString());
-        } else if (USE_OPENSSL) {
-            logger.info("Using OpenSSL: {}, 0x{}",
-                        OpenSsl.versionString(),
-                        Long.toHexString(OpenSsl.version() & 0xFFFFFFFFL));
-
-            if (dumpOpenSslInfo()) {
-                final SSLEngine engine = SslContextUtil.createSslContext(
-                        SslContextBuilder::forClient,
-                        false,
-                        unused -> {}).newEngine(ByteBufAllocator.DEFAULT);
-                logger.info("All available SSL protocols: {}",
-                            ImmutableList.copyOf(engine.getSupportedProtocols()));
-                logger.info("Default enabled SSL protocols: {}", SslContextUtil.DEFAULT_PROTOCOLS);
-                ReferenceCountUtil.release(engine);
-                logger.info("All available SSL ciphers: {}", OpenSsl.availableJavaCipherSuites());
-                logger.info("Default enabled SSL ciphers: {}", SslContextUtil.DEFAULT_CIPHERS);
-            }
-        }
     }
 
     private static boolean isEpollAvailable() {
-        // Netty epoll transport does not work with WSL (Windows Sybsystem for Linux) yet.
-        // TODO(trustin): Re-enable on WSL if https://github.com/Microsoft/WSL/issues/1982 is resolved.
-        return Epoll.isAvailable() && !HAS_WSLENV;
+        if (SystemInfo.isLinux()) {
+            // Netty epoll transport does not work with WSL (Windows Sybsystem for Linux) yet.
+            // TODO(trustin): Re-enable on WSL if https://github.com/Microsoft/WSL/issues/1982 is resolved.
+            return Epoll.isAvailable() && !HAS_WSLENV;
+        }
+        return false;
     }
 
     /**
@@ -422,7 +418,34 @@ public final class Flags {
      * {@code -Dcom.linecorp.armeria.useOpenSsl=false} JVM option to disable it.
      */
     public static boolean useOpenSsl() {
-        return USE_OPENSSL;
+        if (useOpenSsl != null) {
+            return useOpenSsl;
+        }
+        final boolean useOpenSsl = getBoolean("useOpenSsl", true);
+        if (!useOpenSsl) {
+            // OpenSSL explicitly disabled
+            return Flags.useOpenSsl = false;
+        }
+        if (!OpenSsl.isAvailable()) {
+            final Throwable cause = Exceptions.peel(OpenSsl.unavailabilityCause());
+            logger.info("OpenSSL not available: {}", cause.toString());
+            return Flags.useOpenSsl = false;
+        }
+        logger.info("Using OpenSSL: {}, 0x{}", OpenSsl.versionString(),
+                    Long.toHexString(OpenSsl.version() & 0xFFFFFFFFL));
+        if (dumpOpenSslInfo()) {
+            final SSLEngine engine = SslContextUtil.createSslContext(
+                    SslContextBuilder.forClient(),
+                    false,
+                    ImmutableList.of()).newEngine(ByteBufAllocator.DEFAULT);
+            logger.info("All available SSL protocols: {}",
+                        ImmutableList.copyOf(engine.getSupportedProtocols()));
+            logger.info("Default enabled SSL protocols: {}", SslContextUtil.DEFAULT_PROTOCOLS);
+            ReferenceCountUtil.release(engine);
+            logger.info("All available SSL ciphers: {}", OpenSsl.availableJavaCipherSuites());
+            logger.info("Default enabled SSL ciphers: {}", SslContextUtil.DEFAULT_CIPHERS);
+        }
+        return Flags.useOpenSsl = true;
     }
 
     /**
@@ -704,7 +727,7 @@ public final class Flags {
 
     /**
      * Returns the default maximum number of total attempts. Note that this value has effect only if a user
-     * did not specify it when creating a {@link RetryingHttpClient} or a {@link RetryingRpcClient}.
+     * did not specify it when creating a {@link RetryingClient} or a {@link RetryingRpcClient}.
      *
      * <p>The default value of this flag is {@value #DEFAULT_DEFAULT_MAX_TOTAL_ATTEMPTS}. Specify the
      * {@code -Dcom.linecorp.armeria.defaultMaxTotalAttempts=<integer>} JVM option to
@@ -773,6 +796,19 @@ public final class Flags {
     }
 
     /**
+     * Returns the value of the {@code fileServiceCache} parameter. It would be used to create a Caffeine
+     * {@link Cache} instance using {@link CaffeineSpec} for caching file entries.
+     *
+     * <p>The default value of this flag is {@value DEFAULT_FILE_SERVICE_CACHE_SPEC}. Specify the
+     * {@code -Dcom.linecorp.armeria.fileServiceCache=<spec>} JVM option to override the default value.
+     * For example, {@code -Dcom.linecorp.armeria.fileServiceCache=maximumSize=1024,expireAfterAccess=600s}.
+     * Also, specify {@code -Dcom.linecorp.armeria.fileServiceCache=off} JVM option to disable it.
+     */
+    public static Optional<String> fileServiceCacheSpec() {
+        return FILE_SERVICE_CACHE_SPEC;
+    }
+
+    /**
      * Returns the value of the {@code cachedHeaders} parameter which contains a comma-separated list of
      * headers whose values are cached using {@code headerValueCache}.
      *
@@ -818,6 +854,57 @@ public final class Flags {
      */
     public static ExceptionVerbosity annotatedServiceExceptionVerbosity() {
         return ANNOTATED_SERVICE_EXCEPTION_VERBOSITY;
+    }
+
+    /**
+     * Enables {@link DefaultAddressResolverGroup} that resolves domain name using JDK's built-in domain name
+     * lookup mechanism.
+     * Note that JDK's built-in resolver performs a blocking name lookup from the caller thread, and thus
+     * this flag should be enabled only when the default asynchronous resolver does not work as expected,
+     * for example by always throwing a {@link DnsNameResolverTimeoutException}.
+     *
+     * <p>This flag is disabled by default.
+     * Specify the {@code -Dcom.linecorp.armeria.useJdkDnsResolver=true} JVM option
+     * to enable it.
+     */
+    public static boolean useJdkDnsResolver() {
+        return USE_JDK_DNS_RESOLVER;
+    }
+
+    /**
+     * Returns whether {@link CompletableFuture}s returned by Armeria methods log a warning if
+     * {@link CompletableFuture#join()} or {@link CompletableFuture#get()} are called from an event loop thread.
+     * Blocking an event loop thread in this manner reduces performance significantly, possibly causing
+     * deadlocks, so it should be avoided at all costs (e.g. using {@code thenApply()} type methods to execute
+     * asynchronously or running the logic using {@link ServiceRequestContext#blockingTaskExecutor()}.
+     *
+     * <p>This flag is enabled by default.
+     * Specify the {@code -Dcom.linecorp.armeria.reportBlockedEventLoop=false} JVM option
+     * to disable it.
+     */
+    public static boolean reportBlockedEventLoop() {
+        return REPORT_BLOCKED_EVENT_LOOP;
+    }
+
+    /**
+     * Enables validation of HTTP headers for dangerous characters like newlines - such characters can be used
+     * for injecting arbitrary content into HTTP responses.
+     *
+     * <p><strong>DISCLAIMER:</strong> Do not disable this unless you know what you are doing. It is recommended
+     * to keep this validation enabled to ensure the sanity of responses. However, you may wish to disable the
+     * validation to improve performance when you are sure responses are always safe, for example when only
+     * HTTP/2 is used, or when you populate headers with known values, and have no chance of using untrusted
+     * ones.
+     *
+     * <p>See <a href="https://github.com/line/armeria/security/advisories/GHSA-35fr-h7jr-hh86">CWE-113</a> for
+     * more details on the security implications of this flag.
+     *
+     * <p>This flag is enabled by default.
+     * Specify the {@code -Dcom.linecorp.armeria.validateHeaders=false} JVM option
+     * to disable it.
+     */
+    public static boolean validateHeaders() {
+        return VALIDATE_HEADERS;
     }
 
     private static Optional<String> caffeineSpec(String name, String defaultValue) {

@@ -39,6 +39,7 @@ import com.linecorp.armeria.common.HttpResponse;
 import com.linecorp.armeria.common.HttpResponseWriter;
 import com.linecorp.armeria.common.MediaType;
 import com.linecorp.armeria.common.ResponseHeaders;
+import com.linecorp.armeria.internal.eventloop.EventLoopCheckingCompletableFuture;
 import com.linecorp.armeria.unsafe.ByteBufHttpData;
 
 import io.netty.buffer.ByteBuf;
@@ -191,7 +192,7 @@ public abstract class StreamingHttpFile<T extends Closeable> extends AbstractHtt
 
         boolean submitted = false;
         try {
-            final CompletableFuture<AggregatedHttpFile> future = new CompletableFuture<>();
+            final CompletableFuture<AggregatedHttpFile> future = new EventLoopCheckingCompletableFuture<>();
             fileReadExecutor.execute(() -> {
                 final int length = (int) attrs.length();
                 final byte[] array;
@@ -221,11 +222,11 @@ public abstract class StreamingHttpFile<T extends Closeable> extends AbstractHtt
                     }
 
                     final HttpFileBuilder builder =
-                            HttpFileBuilder.of(array != null ? HttpData.wrap(array)
-                                                             : new ByteBufHttpData(buf, true),
-                                               attrs.lastModifiedMillis())
-                                           .date(isDateEnabled())
-                                           .lastModified(isLastModifiedEnabled());
+                            HttpFile.builder(array != null ? HttpData.wrap(array)
+                                                           : new ByteBufHttpData(buf, true),
+                                             attrs.lastModifiedMillis())
+                                    .date(isDateEnabled())
+                                    .lastModified(isLastModifiedEnabled());
 
                     if (contentType() != null) {
                         builder.contentType(contentType());

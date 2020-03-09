@@ -36,6 +36,7 @@ import com.spotify.futures.CompletableFutures;
 import com.linecorp.armeria.common.CommonPools;
 import com.linecorp.armeria.common.RequestContext;
 import com.linecorp.armeria.internal.PooledObjects;
+import com.linecorp.armeria.internal.eventloop.EventLoopCheckingCompletableFuture;
 
 import io.netty.util.ReferenceCountUtil;
 import io.netty.util.concurrent.EventExecutor;
@@ -46,7 +47,7 @@ abstract class AbstractStreamMessage<T> implements StreamMessage<T> {
     static final CloseEvent CANCELLED_CLOSE = new CloseEvent(CancelledSubscriptionException.INSTANCE);
     static final CloseEvent ABORTED_CLOSE = new CloseEvent(AbortedStreamException.INSTANCE);
 
-    private final CompletableFuture<Void> completionFuture = new CompletableFuture<>();
+    private final CompletableFuture<Void> completionFuture = new EventLoopCheckingCompletableFuture<>();
 
     @Override
     public final void subscribe(Subscriber<? super T> subscriber) {
@@ -245,6 +246,20 @@ abstract class AbstractStreamMessage<T> implements StreamMessage<T> {
             } finally {
                 ReferenceCountUtil.safeRelease(e);
             }
+        }
+    }
+
+    /**
+     * Returns newly created {@link CloseEvent} if the specified {@link Throwable} is not an instance of
+     * {@link CancelledSubscriptionException#INSTANCE} or {@link AbortedStreamException#INSTANCE}.
+     */
+    static CloseEvent newCloseEvent(Throwable cause) {
+        if (cause == CancelledSubscriptionException.INSTANCE) {
+            return CANCELLED_CLOSE;
+        } else if (cause == AbortedStreamException.INSTANCE) {
+            return ABORTED_CLOSE;
+        } else {
+            return new CloseEvent(cause);
         }
     }
 

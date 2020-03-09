@@ -61,7 +61,7 @@ which is more efficient:
     import com.linecorp.armeria.client.ClientBuilder;
     import com.linecorp.armeria.client.ClientOption;
 
-    ClientBuilder cb = new ClientBuilder("tbinary+http://example.com/hello");
+    ClientBuilder cb = Clients.builder("tbinary+http://example.com/hello");
     cb.setHttpHeader(AUTHORIZATION, credential);
     // or:
     // cb.option(ClientOption.HTTP_HEADERS, HttpHeaders.of(AUTHORIZATION, credential));
@@ -74,12 +74,13 @@ If you want more freedom on how you manipulate the request headers, use a decora
 
 .. code-block:: java
 
-    ClientBuilder cb = new ClientBuilder("tbinary+http://example.com/hello");
+    ClientBuilder cb = Clients.builder("tbinary+http://example.com/hello");
 
     // Add a decorator that inserts the custom header.
-    cb.decorator((delegate, ctx, req) -> { // See DecoratingClientFunction.
-        req.headers().set(AUTHORIZATION, credential);
-        return delegate.execute(ctx, req);
+    cb.decorator((delegate, ctx, req) -> { // See DecoratingHttpClientFunction and DecoratingRpcClientFunction.
+        HttpRequest newReq = req.withHeaders(req.headers().toBuilder().set(AUTHORIZATION, credential));
+        ctx.updateRequest(newReq);
+        return delegate.execute(ctx, newReq);
     });
 
     HelloService.Iface client = cb.build(HelloService.Iface.class);

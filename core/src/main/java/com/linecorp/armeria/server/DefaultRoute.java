@@ -13,7 +13,6 @@
  * License for the specific language governing permissions and limitations
  * under the License.
  */
-
 package com.linecorp.armeria.server;
 
 import static com.linecorp.armeria.server.RoutingResult.HIGHEST_SCORE;
@@ -27,12 +26,15 @@ import java.util.StringJoiner;
 import javax.annotation.Nullable;
 
 import com.google.common.base.Joiner;
+import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Sets;
 
+import com.linecorp.armeria.common.HttpHeaders;
 import com.linecorp.armeria.common.HttpMethod;
 import com.linecorp.armeria.common.HttpStatus;
 import com.linecorp.armeria.common.MediaType;
+import com.linecorp.armeria.common.QueryParams;
 
 final class DefaultRoute implements Route {
 
@@ -43,6 +45,8 @@ final class DefaultRoute implements Route {
     private final Set<HttpMethod> methods;
     private final Set<MediaType> consumes;
     private final Set<MediaType> produces;
+    private final List<RoutingPredicate<QueryParams>> paramPredicates;
+    private final List<RoutingPredicate<HttpHeaders>> headerPredicates;
 
     private final String loggerName;
     private final String meterTag;
@@ -50,26 +54,37 @@ final class DefaultRoute implements Route {
     private final int complexity;
 
     DefaultRoute(PathMapping pathMapping, Set<HttpMethod> methods,
-                 Set<MediaType> consumes, Set<MediaType> produces) {
+                 Set<MediaType> consumes, Set<MediaType> produces,
+                 List<RoutingPredicate<QueryParams>> paramPredicates,
+                 List<RoutingPredicate<HttpHeaders>> headerPredicates) {
         this.pathMapping = requireNonNull(pathMapping, "pathMapping");
         this.methods = Sets.immutableEnumSet(requireNonNull(methods, "methods"));
         this.consumes = ImmutableSet.copyOf(requireNonNull(consumes, "consumes"));
         this.produces = ImmutableSet.copyOf(requireNonNull(produces, "produces"));
+        this.paramPredicates = ImmutableList.copyOf(requireNonNull(paramPredicates, "paramPredicates"));
+        this.headerPredicates = ImmutableList.copyOf(requireNonNull(headerPredicates, "headerPredicates"));
 
-        loggerName = generateLoggerName(pathMapping.loggerName(), methods, consumes, produces);
+        loggerName = generateLoggerName(pathMapping.loggerName(), methods, consumes, produces,
+                                        paramPredicates, headerPredicates);
 
-        meterTag = generateMeterTag(pathMapping.meterTag(), methods, consumes, produces);
+        meterTag = generateMeterTag(pathMapping.meterTag(), methods, consumes, produces,
+                                    paramPredicates, headerPredicates);
 
         int complexity = 0;
         if (!methods.isEmpty()) {
-            complexity++;
+            complexity += 1;
         }
-
         if (!consumes.isEmpty()) {
-            complexity += 2;
+            complexity += 1 << 1;
         }
         if (!produces.isEmpty()) {
-            complexity += 4;
+            complexity += 1 << 2;
+        }
+        if (!paramPredicates.isEmpty()) {
+            complexity += 1 << 3;
+        }
+        if (!headerPredicates.isEmpty()) {
+            complexity += 1 << 4;
         }
         this.complexity = complexity;
     }
@@ -81,30 +96,23 @@ final class DefaultRoute implements Route {
             return RoutingResult.empty();
         }
 
-        if (methods.isEmpty()) {
-            return builder.build();
-        }
-
-        // We need to check the method after checking the path, in order to return '405 Method Not Allowed'.
-        // If the request is a CORS preflight, we don't care whether the path mapping supports OPTIONS method.
-        // The request may be always passed into the designated service, but most of cases, it will be handled
-        // by a CorsService decorator before it reaches the final service.
-        if (!routingCtx.isCorsPreflight() && !methods.contains(routingCtx.method())) {
+        if (!methods.isEmpty() && !methods.contains(routingCtx.method())) {
             // '415 Unsupported Media Type' and '406 Not Acceptable' is more specific than
             // '405 Method Not Allowed'. So 405 would be set if there is no status code set before.
-            if (!routingCtx.delayedThrowable().isPresent()) {
-                routingCtx.delayThrowable(HttpStatusException.of(HttpStatus.METHOD_NOT_ALLOWED));
+            if (routingCtx.deferredStatusException() == null) {
+                routingCtx.deferStatusException(HttpStatusException.of(HttpStatus.METHOD_NOT_ALLOWED));
             }
-            return RoutingResult.empty();
+
+            return emptyOrCorsPreflightResult(routingCtx, builder);
         }
 
         final MediaType contentType = routingCtx.contentType();
         boolean contentTypeMatched = false;
         if (contentType == null) {
-            if (consumes().isEmpty()) {
+            if (consumes.isEmpty()) {
                 contentTypeMatched = true;
             }
-        } else if (!consumes().isEmpty()) {
+        } else if (!consumes.isEmpty()) {
             for (MediaType consumeType : consumes) {
                 contentTypeMatched = contentType.belongsTo(consumeType);
                 if (contentTypeMatched) {
@@ -112,25 +120,24 @@ final class DefaultRoute implements Route {
                 }
             }
             if (!contentTypeMatched) {
-                routingCtx.delayThrowable(HttpStatusException.of(HttpStatus.UNSUPPORTED_MEDIA_TYPE));
-                return RoutingResult.empty();
+                routingCtx.deferStatusException(HttpStatusException.of(HttpStatus.UNSUPPORTED_MEDIA_TYPE));
+                return emptyOrCorsPreflightResult(routingCtx, builder);
             }
         }
 
         final List<MediaType> acceptTypes = routingCtx.acceptTypes();
         if (acceptTypes.isEmpty()) {
-            if (contentTypeMatched && produces().isEmpty()) {
+            if (contentTypeMatched && produces.isEmpty()) {
                 builder.score(HIGHEST_SCORE);
             }
             for (MediaType produceType : produces) {
                 if (!isAnyType(produceType)) {
-                    return builder.negotiatedResponseMediaType(produceType).build();
+                    builder.negotiatedResponseMediaType(produceType);
+                    break;
                 }
             }
-            return builder.build();
-        }
-
-        if (!produces.isEmpty()) {
+        } else if (!produces.isEmpty()) {
+            boolean found = false;
             for (MediaType produceType : produces) {
                 for (int i = 0; i < acceptTypes.size(); i++) {
                     final MediaType acceptType = acceptTypes.get(i);
@@ -141,17 +148,44 @@ final class DefaultRoute implements Route {
                         final int score = i == 0 ? HIGHEST_SCORE : -1 * i;
                         builder.score(score);
                         if (!isAnyType(produceType)) {
-                            return builder.negotiatedResponseMediaType(produceType).build();
+                            builder.negotiatedResponseMediaType(produceType);
                         }
-                        return builder.build();
+                        found = true;
+                        break;
                     }
                 }
+                if (found) {
+                    break;
+                }
             }
-            routingCtx.delayThrowable(HttpStatusException.of(HttpStatus.NOT_ACCEPTABLE));
-            return RoutingResult.empty();
+            if (!found) {
+                routingCtx.deferStatusException(HttpStatusException.of(HttpStatus.NOT_ACCEPTABLE));
+                return emptyOrCorsPreflightResult(routingCtx, builder);
+            }
         }
 
+        if (routingCtx.requiresMatchingParamsPredicates()) {
+            if (!paramPredicates.isEmpty() &&
+                !paramPredicates.stream().allMatch(p -> p.test(routingCtx.params()))) {
+                return RoutingResult.empty();
+            }
+        }
+        if (routingCtx.requiresMatchingHeadersPredicates()) {
+            if (!headerPredicates.isEmpty() &&
+                !headerPredicates.stream().allMatch(p -> p.test(routingCtx.headers()))) {
+                return RoutingResult.empty();
+            }
+        }
         return builder.build();
+    }
+
+    private static RoutingResult emptyOrCorsPreflightResult(RoutingContext routingCtx,
+                                                            RoutingResultBuilder builder) {
+        if (routingCtx.isCorsPreflight()) {
+            return builder.type(RoutingResultType.CORS_PREFLIGHT).build();
+        }
+
+        return RoutingResult.empty();
     }
 
     private static boolean isAnyType(MediaType contentType) {
@@ -205,7 +239,9 @@ final class DefaultRoute implements Route {
     }
 
     private static String generateLoggerName(String prefix, Set<HttpMethod> methods,
-                                             Set<MediaType> consumes, Set<MediaType> produces) {
+                                             Set<MediaType> consumes, Set<MediaType> produces,
+                                             List<RoutingPredicate<QueryParams>> paramPredicates,
+                                             List<RoutingPredicate<HttpHeaders>> headerPredicates) {
         final StringJoiner name = new StringJoiner(".");
         name.add(prefix);
         if (!methods.isEmpty()) {
@@ -227,11 +263,23 @@ final class DefaultRoute implements Route {
             name.add("produces");
             produces.forEach(e -> name.add(e.type() + '_' + e.subtype()));
         }
+        if (!paramPredicates.isEmpty()) {
+            name.add("params");
+            name.add(loggerNameJoiner.join(
+                    paramPredicates.stream().map(RoutingPredicate::name).sorted().distinct().iterator()));
+        }
+        if (!headerPredicates.isEmpty()) {
+            name.add("headers");
+            name.add(loggerNameJoiner.join(
+                    headerPredicates.stream().map(RoutingPredicate::name).sorted().distinct().iterator()));
+        }
         return name.toString();
     }
 
     private static String generateMeterTag(String parentTag, Set<HttpMethod> methods,
-                                           Set<MediaType> consumes, Set<MediaType> produces) {
+                                           Set<MediaType> consumes, Set<MediaType> produces,
+                                           List<RoutingPredicate<QueryParams>> paramPredicates,
+                                           List<RoutingPredicate<HttpHeaders>> headerPredicates) {
 
         final StringJoiner name = new StringJoiner(",");
         name.add(parentTag);
@@ -249,6 +297,16 @@ final class DefaultRoute implements Route {
         addMediaTypes(name, "consumes", consumes);
         addMediaTypes(name, "produces", produces);
 
+        if (!paramPredicates.isEmpty()) {
+            name.add("params");
+            name.add(meterTagJoiner.join(
+                    paramPredicates.stream().map(RoutingPredicate::name).sorted().distinct().iterator()));
+        }
+        if (!headerPredicates.isEmpty()) {
+            name.add("headers");
+            name.add(meterTagJoiner.join(
+                    headerPredicates.stream().map(RoutingPredicate::name).sorted().distinct().iterator()));
+        }
         return name.toString();
     }
 
@@ -286,7 +344,9 @@ final class DefaultRoute implements Route {
         return Objects.equals(pathMapping, that.pathMapping) &&
                methods.equals(that.methods) &&
                consumes.equals(that.consumes) &&
-               produces.equals(that.produces);
+               produces.equals(that.produces) &&
+               headerPredicates.equals(that.headerPredicates) &&
+               paramPredicates.equals(that.paramPredicates);
     }
 
     @Override

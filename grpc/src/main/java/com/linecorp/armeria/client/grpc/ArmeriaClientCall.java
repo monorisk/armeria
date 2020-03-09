@@ -32,9 +32,9 @@ import org.curioswitch.common.protobuf.json.MessageMarshaller;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import com.linecorp.armeria.client.Client;
 import com.linecorp.armeria.client.DefaultClientRequestContext;
 import com.linecorp.armeria.client.Endpoint;
+import com.linecorp.armeria.client.HttpClient;
 import com.linecorp.armeria.common.HttpHeaders;
 import com.linecorp.armeria.common.HttpHeadersBuilder;
 import com.linecorp.armeria.common.HttpRequest;
@@ -65,10 +65,12 @@ import io.grpc.ClientCall;
 import io.grpc.Codec.Identity;
 import io.grpc.Compressor;
 import io.grpc.CompressorRegistry;
+import io.grpc.Deadline;
 import io.grpc.DecompressorRegistry;
 import io.grpc.Metadata;
 import io.grpc.MethodDescriptor;
 import io.grpc.Status;
+import io.grpc.Status.Code;
 import io.netty.buffer.ByteBuf;
 import io.netty.util.ByteProcessor;
 import io.netty.util.ByteProcessor.IndexOfProcessor;
@@ -77,7 +79,7 @@ import io.netty.util.ByteProcessor.IndexOfProcessor;
  * Encapsulates the state of a single client call, writing messages from the client and reading responses
  * from the server, passing to business logic via {@link ClientCall.Listener}.
  */
-class ArmeriaClientCall<I, O> extends ClientCall<I, O>
+final class ArmeriaClientCall<I, O> extends ClientCall<I, O>
         implements ArmeriaMessageDeframer.Listener, TransportStatusListener {
 
     private static final Runnable NO_OP = () -> {
@@ -93,7 +95,7 @@ class ArmeriaClientCall<I, O> extends ClientCall<I, O>
 
     private final DefaultClientRequestContext ctx;
     private final Endpoint endpoint;
-    private final Client<HttpRequest, HttpResponse> httpClient;
+    private final HttpClient httpClient;
     private final HttpRequestWriter req;
     private final MethodDescriptor<I, O> method;
     private final CallOptions callOptions;
@@ -120,7 +122,7 @@ class ArmeriaClientCall<I, O> extends ClientCall<I, O>
     ArmeriaClientCall(
             DefaultClientRequestContext ctx,
             Endpoint endpoint,
-            Client<HttpRequest, HttpResponse> httpClient,
+            HttpClient httpClient,
             HttpRequestWriter req,
             MethodDescriptor<I, O> method,
             int maxOutboundMessageSizeBytes,
@@ -151,6 +153,7 @@ class ArmeriaClientCall<I, O> extends ClientCall<I, O>
                 new ArmeriaMessageDeframer(this, maxInboundMessageSizeBytes, ctx.alloc()),
                 this);
         executor = callOptions.getExecutor();
+
         req.completionFuture().handle((unused1, unused2) -> {
             if (!ctx.log().isAvailable(RequestLogAvailability.REQUEST_CONTENT)) {
                 // Can reach here if the request stream was empty.
@@ -180,6 +183,26 @@ class ArmeriaClientCall<I, O> extends ClientCall<I, O>
         messageFramer.setCompressor(ForwardingCompressor.forGrpc(compressor));
         prepareHeaders(compressor, metadata);
         listener = responseListener;
+
+        if (callOptions.getDeadline() != null) {
+            final long remainingMillis = callOptions.getDeadline().timeRemaining(TimeUnit.MILLISECONDS);
+            if (remainingMillis <= 0) {
+                final Status status = Status.DEADLINE_EXCEEDED
+                        .augmentDescription(
+                                "ClientCall started after deadline exceeded: " +
+                                callOptions.getDeadline());
+                close(status, new Metadata());
+            } else {
+                ctx.setResponseTimeoutAfterMillis(remainingMillis);
+                ctx.setResponseTimeoutHandler(() -> {
+                    final Status status = Status.DEADLINE_EXCEEDED
+                            .augmentDescription(
+                                    "deadline exceeded after " +
+                                    TimeUnit.MILLISECONDS.toNanos(remainingMillis) + "ns.");
+                    close(status, new Metadata());
+                });
+            }
+        }
 
         final HttpResponse res = initContextAndExecuteWithFallback(
                 httpClient, ctx, endpoint,
@@ -226,7 +249,11 @@ class ArmeriaClientCall<I, O> extends ClientCall<I, O>
             status = status.withCause(cause);
         }
         close(status, new Metadata());
-        req.abort();
+        if (cause == null) {
+            req.abort();
+        } else {
+            req.abort(cause);
+        }
     }
 
     @Override
@@ -358,13 +385,24 @@ class ArmeriaClientCall<I, O> extends ClientCall<I, O>
 
         MetadataUtil.fillHeaders(metadata, newHeaders);
 
-        final HttpRequest newReq = HttpRequest.of(req, newHeaders.build());
+        final HttpRequest newReq = req.withHeaders(newHeaders);
         ctx.updateRequest(newReq);
     }
 
     private void close(Status status, Metadata metadata) {
+        final Deadline deadline = callOptions.getDeadline();
+        if (status.getCode() == Code.CANCELLED && deadline != null && deadline.isExpired()) {
+            status = Status.DEADLINE_EXCEEDED.augmentDescription(
+                    "ClientCall was cancelled at or after deadline.");
+            // Replace trailers to prevent mixing sources of status and trailers.
+            metadata = new Metadata();
+        }
         ctx.logBuilder().responseContent(GrpcLogUtil.rpcResponse(status, firstResponse), null);
-        req.abort();
+        if (status.isOk()) {
+            req.abort();
+        } else {
+            req.abort(status.asRuntimeException(metadata));
+        }
         responseReader.cancel();
 
         try (SafeCloseable ignored = ctx.push()) {

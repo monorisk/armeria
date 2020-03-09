@@ -94,15 +94,15 @@ a :api:`GrpcServiceBuilder` and add it to the :api:`ServerBuilder`:
 .. note::
 
     We bound the :api:`GrpcService` without specifying any path. It is because :api:`GrpcService`
-    implements :api:`ServiceWithRoutes`, which dynamically provides :apiplural:`Route` by itself.
+    implements :api:`HttpServiceWithRoutes`, which dynamically provides :apiplural:`Route` by itself.
 
 .. _server-grpc-decorator:
 
 Decorating a ``GrpcService``
 ----------------------------
 
-Unlike a usual Armeria :api:`Service`, :api:`GrpcService` implements a special interface called
-:api:`ServiceWithRoutes`. Therefore, it is recommended to decorate a :api:`GrpcService` by specifying
+Unlike a usual Armeria service, :api:`GrpcService` implements a special interface called
+:api:`HttpServiceWithRoutes`. Therefore, it is recommended to decorate a :api:`GrpcService` by specifying
 decorator functions as extra parameters rather than using ``Service.decorate()``:
 
 .. code-block:: java
@@ -119,7 +119,7 @@ decorator functions as extra parameters rather than using ``Service.decorate()``
     Server server = sb.build();
     server.start();
 
-See :ref:`server-decorator-service-with-routes` for more information about :api:`ServiceWithRoutes`.
+See :ref:`server-decorator-service-with-routes` for more information about :api:`HttpServiceWithRoutes`.
 
 ``gRPC-Web``
 ------------
@@ -155,21 +155,22 @@ you build a :api:`GrpcService`:
 .. code-block:: java
 
     import com.linecorp.armeria.common.grpc.GrpcHeaderNames;
+    import com.linecorp.armeria.server.cors.CorsService;
     import com.linecorp.armeria.server.cors.CorsServiceBuilder;
 
     ServerBuilder sb = Server.builder();
     ...
 
     final CorsServiceBuilder corsBuilder =
-            CorsServiceBuilder.forOrigin("http://foo.com")
-                              .allowRequestMethods(HttpMethod.POST) // Allow POST method.
-                              // Allow Content-type and X-GRPC-WEB headers.
-                              .allowRequestHeaders(HttpHeaderNames.CONTENT_TYPE,
-                                                   HttpHeaderNames.of("X-GRPC-WEB"))
-                              // Expose trailers of the HTTP response to the client.
-                              .exposeHeaders(GrpcHeaderNames.GRPC_STATUS,
-                                             GrpcHeaderNames.GRPC_MESSAGE,
-                                             GrpcHeaderNames.ARMERIA_GRPC_THROWABLEPROTO_BIN);
+            CorsService.builder("http://foo.com")
+                       .allowRequestMethods(HttpMethod.POST) // Allow POST method.
+                       // Allow Content-type and X-GRPC-WEB headers.
+                       .allowRequestHeaders(HttpHeaderNames.CONTENT_TYPE,
+                                            HttpHeaderNames.of("X-GRPC-WEB"))
+                       // Expose trailers of the HTTP response to the client.
+                       .exposeHeaders(GrpcHeaderNames.GRPC_STATUS,
+                                      GrpcHeaderNames.GRPC_MESSAGE,
+                                      GrpcHeaderNames.ARMERIA_GRPC_THROWABLEPROTO_BIN);
 
     sb.service(GrpcService.builder()
                           .addService(new MyHelloService())

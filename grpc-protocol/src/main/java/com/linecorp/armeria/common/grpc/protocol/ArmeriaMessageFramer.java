@@ -55,6 +55,7 @@ import java.io.OutputStream;
 
 import javax.annotation.Nullable;
 
+import com.linecorp.armeria.internal.grpc.protocol.StatusCodes;
 import com.linecorp.armeria.unsafe.ByteBufHttpData;
 
 import io.netty.buffer.ByteBuf;
@@ -65,7 +66,8 @@ import io.netty.buffer.CompositeByteBuf;
 
 /**
  * A framer of messages for transport with the gRPC wire protocol. See
- * <a href="https://grpc.io/docs/guides/wire.html">gRPC Wire Protocol</a> for more detail on the protocol.
+ * <a href="https://github.com/grpc/grpc/blob/master/doc/PROTOCOL-HTTP2.md">gRPC Wire Format</a>
+ * for more detail on the protocol.
  *
  * <p>The logic has mostly been copied from {@code io.grpc.internal.MessageFramer}, while removing the buffer
  * abstraction in favor of using {@link ByteBuf} directly. The code has been vastly simplified due to the lack
@@ -124,10 +126,18 @@ public class ArmeriaMessageFramer implements AutoCloseable {
         }
     }
 
+    /**
+     * Enables or disables message compression.
+     *
+     * @param messageCompression whether to enable message compression.
+     */
     public void setMessageCompression(boolean messageCompression) {
         this.messageCompression = messageCompression;
     }
 
+    /**
+     * Sets the {@link Compressor}.
+     */
     public void setCompressor(@Nullable Compressor compressor) {
         this.compressor = compressor;
     }

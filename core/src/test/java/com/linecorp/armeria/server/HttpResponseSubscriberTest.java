@@ -18,6 +18,7 @@ package com.linecorp.armeria.server;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 import org.junit.Test;
 import org.reactivestreams.Subscription;
@@ -64,13 +65,13 @@ public class HttpResponseSubscriberTest {
 
     private static DefaultServiceRequestContext serviceRequestContext(RequestHeaders headers) {
         return (DefaultServiceRequestContext)
-                ServiceRequestContextBuilder.of(HttpRequest.of(headers))
-                                            .eventLoop(EventLoopGroups.directEventLoop())
-                                            .serverConfigurator(sb -> {
-                                                sb.contentPreview(100);
-                                                sb.requestTimeoutMillis(0);
-                                            })
-                                            .build();
+                ServiceRequestContext.builder(HttpRequest.of(headers))
+                                     .eventLoop(EventLoopGroups.directEventLoop())
+                                     .serverConfigurator(sb -> {
+                                         sb.contentPreview(100);
+                                         sb.requestTimeoutMillis(0);
+                                     })
+                                     .build();
     }
 
     private static HttpResponseSubscriber responseSubscriber(RequestHeaders headers,
@@ -80,9 +81,12 @@ public class HttpResponseSubscriberTest {
                                                               InboundTrafficController.disabled(),
                                                               sctx.maxRequestLength());
         req.init(sctx);
-        return new HttpResponseSubscriber(mock(ChannelHandlerContext.class),
+        final ChannelHandlerContext mockChannelHandlerContext = mock(ChannelHandlerContext.class);
+        when(mockChannelHandlerContext.channel()).thenReturn(sctx.channel());
+        return new HttpResponseSubscriber(mockChannelHandlerContext,
                                           new ImmediateWriteEmulator(sctx.channel()),
-                                          sctx, req);
+                                          sctx, req,
+                                          false, false);
     }
 
     private static ByteBuf newBuffer(String content) {

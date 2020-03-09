@@ -27,11 +27,10 @@ import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.RegisterExtension;
 
-import com.linecorp.armeria.client.HttpClient;
-import com.linecorp.armeria.client.HttpClientBuilder;
+import com.linecorp.armeria.client.WebClient;
 import com.linecorp.armeria.client.retry.Backoff;
 import com.linecorp.armeria.client.retry.RetryStrategy;
-import com.linecorp.armeria.client.retry.RetryingHttpClient;
+import com.linecorp.armeria.client.retry.RetryingClient;
 import com.linecorp.armeria.server.ServerBuilder;
 import com.linecorp.armeria.testing.junit.common.EventLoopExtension;
 import com.linecorp.armeria.testing.junit.server.ServerExtension;
@@ -65,7 +64,7 @@ class HttpRequestDuplicatorTest {
                 HttpMethod.PUT, "/foo", PLAIN_TEXT_UTF_8, HttpData.ofUtf8("bar"),
                 HttpHeaders.of(CONTENT_MD5, "37b51d194a7513e45b56f6524f2d51f2"));
 
-        final HttpRequest publisher = HttpRequest.of(aReq);
+        final HttpRequest publisher = aReq.toHttpRequest();
         final HttpRequestDuplicator reqDuplicator = new HttpRequestDuplicator(publisher);
 
         final AggregatedHttpRequest req1 = reqDuplicator.duplicateStream().aggregate().join();
@@ -91,10 +90,11 @@ class HttpRequestDuplicatorTest {
 
     @Test
     void longLivedRequest() {
-        final HttpClient client = new HttpClientBuilder(server.uri("/"))
-                .decorator(RetryingHttpClient.newDecorator(
-                        RetryStrategy.onServerErrorStatus(Backoff.withoutDelay())))
-                .build();
+        final WebClient client =
+                WebClient.builder(server.uri("/"))
+                         .decorator(RetryingClient.newDecorator(
+                                 RetryStrategy.onServerErrorStatus(Backoff.withoutDelay())))
+                         .build();
 
         final HttpRequestWriter req = HttpRequest.streaming(HttpMethod.POST, "/long_streaming");
         writeStreamingRequest(req, 0);
@@ -109,6 +109,6 @@ class HttpRequestDuplicatorTest {
         }
         req.write(HttpData.ofUtf8(String.valueOf(index)));
         req.onDemand(() -> eventLoop.get().schedule(() -> writeStreamingRequest(req, index + 1),
-                300, TimeUnit.MILLISECONDS));
+                                                    300, TimeUnit.MILLISECONDS));
     }
 }

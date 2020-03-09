@@ -31,7 +31,7 @@ import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
 
-import com.linecorp.armeria.client.ClientBuilder;
+import com.linecorp.armeria.client.Clients;
 import com.linecorp.armeria.client.InvalidResponseHeadersException;
 import com.linecorp.armeria.common.HttpStatus;
 import com.linecorp.armeria.server.ServerBuilder;
@@ -64,7 +64,7 @@ public class ThrottlingRpcServiceTest {
     private HelloService.Iface serviceHandler;
 
     @Before
-    public void setup() {
+    public void setUp() {
         // Start server here to avoid Rule ordering issue. Remove once
         // https://github.com/junit-team/junit4/pull/1445 will release.
         server.start();
@@ -72,8 +72,8 @@ public class ThrottlingRpcServiceTest {
 
     @Test
     public void serve() throws Exception {
-        final HelloService.Iface client = new ClientBuilder(server.uri(BINARY, "/thrift-always"))
-                .build(HelloService.Iface.class);
+        final HelloService.Iface client =
+                Clients.newClient(server.uri(BINARY, "/thrift-always"), HelloService.Iface.class);
         when(serviceHandler.hello("foo")).thenReturn("bar");
 
         assertThat(client.hello("foo")).isEqualTo("bar");
@@ -81,8 +81,8 @@ public class ThrottlingRpcServiceTest {
 
     @Test
     public void throttle() throws Exception {
-        final HelloService.Iface client = new ClientBuilder(server.uri(BINARY, "/thrift-never"))
-                .build(HelloService.Iface.class);
+        final HelloService.Iface client =
+                Clients.newClient(server.uri(BINARY, "/thrift-never"), HelloService.Iface.class);
 
         assertThatThrownBy(() -> client.hello("foo"))
                 .isInstanceOfSatisfying(InvalidResponseHeadersException.class, cause -> {

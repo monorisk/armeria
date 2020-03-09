@@ -37,6 +37,9 @@ import com.linecorp.armeria.shared.EventLoopJmhExecutor;
 import io.netty.channel.DefaultEventLoop;
 import io.netty.channel.EventLoop;
 
+/**
+ * Microbenchmarks of {@link StreamMessage Stream Messages}.
+ */
 @Fork(jvmArgsAppend = { EventLoopJmhExecutor.JVM_ARG_1, EventLoopJmhExecutor.JVM_ARG_2 })
 @State(Scope.Benchmark)
 public class StreamMessageBenchmark {

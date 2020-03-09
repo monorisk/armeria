@@ -1,0 +1,21 @@
+plugins {
+    id 'application'
+}
+
+dependencies {
+    compile project(':core')
+    compile project(':grpc')
+    compile 'io.projectreactor:reactor-core'
+    compileOnly 'jakarta.annotation:jakarta.annotation-api'
+    runtime 'org.slf4j:slf4j-simple'
+
+    testCompile 'jakarta.annotation:jakarta.annotation-api'
+    testCompile 'net.javacrumbs.json-unit:json-unit-fluent'
+    testCompile 'org.assertj:assertj-core'
+    testCompile 'org.awaitility:awaitility'
+    testCompile 'org.junit.jupiter:junit-jupiter-api'
+}
+
+application {
+    mainClassName = 'example.armeria.grpc.Main'
+}

@@ -21,6 +21,7 @@ import java.util.function.Function;
 import org.slf4j.Logger;
 
 import com.linecorp.armeria.common.HttpHeaders;
+import com.linecorp.armeria.common.RequestContext;
 import com.linecorp.armeria.common.RequestHeaders;
 import com.linecorp.armeria.common.ResponseHeaders;
 import com.linecorp.armeria.common.logging.LogLevel;
@@ -30,9 +31,9 @@ import com.linecorp.armeria.common.logging.RequestLog;
  * Utilities for logging decorators.
  */
 public final class LoggingDecorators {
-    private static final String REQUEST_FORMAT = "Request: {}";
-    private static final String RESPONSE_FORMAT = "Response: {}";
-    private static final String RESPONSE_FORMAT2 = "Response: {}, cause: {}";
+    private static final String REQUEST_FORMAT = "{} Request: {}";
+    private static final String RESPONSE_FORMAT = "{} Response: {}";
+    private static final String RESPONSE_FORMAT2 = "{} Response: {}, cause: {}";
 
     private LoggingDecorators() {}
 
@@ -40,13 +41,15 @@ public final class LoggingDecorators {
      * Logs a stringified request of {@link RequestLog}.
      */
     public static void logRequest(
-            Logger logger, RequestLog log, LogLevel requestLogLevel,
+            Logger logger, RequestLog log,
+            Function<? super RequestLog, LogLevel> requestLogLevelMapper,
             Function<? super RequestHeaders, ?> requestHeadersSanitizer,
             Function<Object, ?> requestContentSanitizer,
             Function<? super HttpHeaders, ?> requestTrailersSanitizer) {
 
+        final LogLevel requestLogLevel = requestLogLevelMapper.apply(log);
         if (requestLogLevel.isEnabled(logger)) {
-            requestLogLevel.log(logger, REQUEST_FORMAT,
+            requestLogLevel.log(logger, REQUEST_FORMAT, log.context(),
                                 log.toStringRequestOnly(requestHeadersSanitizer, requestContentSanitizer,
                                                         requestTrailersSanitizer));
         }
@@ -56,44 +59,48 @@ public final class LoggingDecorators {
      * Logs a stringified response of {@link RequestLog}.
      */
     public static void logResponse(
-            Logger logger, RequestLog log, LogLevel requestLogLevel,
+            Logger logger, RequestLog log,
+            Function<? super RequestLog, LogLevel> requestLogLevelMapper,
+            Function<? super RequestLog, LogLevel> responseLogLevelMapper,
             Function<? super RequestHeaders, ?> requestHeadersSanitizer,
             Function<Object, ?> requestContentSanitizer,
             Function<? super HttpHeaders, ?> requestTrailersSanitizer,
-            LogLevel successfulResponseLogLevel,
-            LogLevel failedResponseLogLevel,
             Function<? super ResponseHeaders, ?> responseHeadersSanitizer,
             Function<Object, ?> responseContentSanitizer,
             Function<? super HttpHeaders, ?> responseTrailersSanitizer,
             Function<? super Throwable, ?> responseCauseSanitizer) {
-
+        final LogLevel responseLogLevel = responseLogLevelMapper.apply(log);
         final Throwable responseCause = log.responseCause();
-        final LogLevel level = responseCause == null ? successfulResponseLogLevel
-                                                     : failedResponseLogLevel;
-        if (level.isEnabled(logger)) {
+
+        if (responseLogLevel.isEnabled(logger)) {
+            final RequestContext ctx = log.context();
             final String responseStr = log.toStringResponseOnly(responseHeadersSanitizer,
                                                                 responseContentSanitizer,
                                                                 responseTrailersSanitizer);
             if (responseCause == null) {
-                level.log(logger, RESPONSE_FORMAT, responseStr);
+                responseLogLevel.log(logger, RESPONSE_FORMAT, ctx, responseStr);
             } else {
+                final LogLevel requestLogLevel = requestLogLevelMapper.apply(log);
                 if (!requestLogLevel.isEnabled(logger)) {
                     // Request wasn't logged but this is an unsuccessful response, log the request too to help
                     // debugging.
-                    level.log(logger, REQUEST_FORMAT, log.toStringRequestOnly(requestHeadersSanitizer,
-                                                                              requestContentSanitizer,
-                                                                              requestTrailersSanitizer));
+                    responseLogLevel.log(logger, REQUEST_FORMAT, ctx,
+                                         log.toStringRequestOnly(requestHeadersSanitizer,
+                                                                 requestContentSanitizer,
+                                                                 requestTrailersSanitizer));
                 }
 
                 final Object sanitizedResponseCause = responseCauseSanitizer.apply(responseCause);
                 if (sanitizedResponseCause != null) {
                     if (sanitizedResponseCause instanceof Throwable) {
-                        level.log(logger, RESPONSE_FORMAT, responseStr, sanitizedResponseCause);
+                        responseLogLevel.log(logger, RESPONSE_FORMAT, ctx,
+                                             responseStr, sanitizedResponseCause);
                     } else {
-                        level.log(logger, RESPONSE_FORMAT2, responseStr, sanitizedResponseCause);
+                        responseLogLevel.log(logger, RESPONSE_FORMAT2, ctx,
+                                             responseStr, sanitizedResponseCause);
                     }
                 } else {
-                    level.log(logger, RESPONSE_FORMAT, responseStr);
+                    responseLogLevel.log(logger, RESPONSE_FORMAT, ctx, responseStr);
                 }
             }
         }

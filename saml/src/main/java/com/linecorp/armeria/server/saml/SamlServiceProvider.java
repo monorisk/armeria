@@ -30,12 +30,11 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 
 import com.linecorp.armeria.common.HttpRequest;
-import com.linecorp.armeria.common.HttpResponse;
 import com.linecorp.armeria.common.SessionProtocol;
+import com.linecorp.armeria.server.HttpService;
+import com.linecorp.armeria.server.HttpServiceWithRoutes;
 import com.linecorp.armeria.server.Route;
 import com.linecorp.armeria.server.Server;
-import com.linecorp.armeria.server.Service;
-import com.linecorp.armeria.server.ServiceWithRoutes;
 import com.linecorp.armeria.server.auth.Authorizer;
 
 /**
@@ -44,6 +43,13 @@ import com.linecorp.armeria.server.auth.Authorizer;
  * @see <a href="https://line.github.io/armeria/advanced-saml.html">SAML Single Sign-On</a>
  */
 public final class SamlServiceProvider {
+
+    /**
+     * Returns a new {@link SamlServiceProviderBuilder}.
+     */
+    public static SamlServiceProviderBuilder builder() {
+        return new SamlServiceProviderBuilder();
+    }
 
     private final Authorizer<HttpRequest> authorizer;
 
@@ -242,15 +248,14 @@ public final class SamlServiceProvider {
     /**
      * Creates a decorator which initiates a SAML authentication if a request is not authenticated.
      */
-    public Function<Service<HttpRequest, HttpResponse>,
-            Service<HttpRequest, HttpResponse>> newSamlDecorator() {
+    public Function<? super HttpService, ? extends HttpService> newSamlDecorator() {
         return delegate -> new SamlDecorator(this, delegate);
     }
 
     /**
-     * Creates a {@link Service} which handles SAML messages.
+     * Creates an {@link HttpService} which handles SAML messages.
      */
-    public ServiceWithRoutes<HttpRequest, HttpResponse> newSamlService() {
+    public HttpServiceWithRoutes newSamlService() {
         return new SamlService(this);
     }
 }

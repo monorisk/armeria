@@ -42,12 +42,12 @@ public class SpringTomcatApplication {
      */
     @Bean
     public ArmeriaServerConfigurator armeriaTomcat() {
-        WebServer webServer = ((WebServerApplicationContext) applicationContext).getWebServer();
+        final WebServer webServer = ((WebServerApplicationContext) applicationContext).getWebServer();
         if (webServer instanceof TomcatWebServer) {
-            Tomcat tomcat = ((TomcatWebServer) webServer).getTomcat();
+            final Tomcat tomcat = ((TomcatWebServer) webServer).getTomcat();
 
             return serverBuilder -> serverBuilder.service("prefix:/tomcat/api/rest/v1",
-                                                          TomcatService.forTomcat(tomcat));
+                                                          TomcatService.of(tomcat));
         }
         return serverBuilder -> { };
     }
